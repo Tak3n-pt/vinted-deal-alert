@@ -30,7 +30,7 @@ async function main(): Promise<void> {
       scanCount += 1;
       if (!once && config.heartbeatEveryScans > 0 && scanCount % config.heartbeatEveryScans === 0) {
         await discord.sendStatus(
-          `Vinted bot is running. Last scan: ${result.listings} listings, ${result.alertable} alertable, ${result.sent} sent. Best candidate: ${result.bestCandidate}.`
+          `Le bot Vinted fonctionne. Dernier scan : ${result.listings} annonces, ${result.alertable} alertables, ${result.sent} envoyées. Meilleur candidat : ${result.bestCandidate}.`
         );
       }
     } finally {
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   setInterval(() => {
     runGuardedScan().catch((error) => {
       console.error(`[scan] ${error instanceof Error ? error.stack : String(error)}`);
-      discord.sendStatus(`Vinted bot scan failed: ${error instanceof Error ? error.message : String(error)}`).catch((statusError) => {
+      discord.sendStatus(`Scan du bot Vinted échoué : ${error instanceof Error ? error.message : String(error)}`).catch((statusError) => {
         console.error(`[status] ${statusError instanceof Error ? statusError.stack : String(statusError)}`);
       });
     });
@@ -99,7 +99,7 @@ export async function runScan({
       await store.recordAlert(deal);
       sentListingIds.add(deal.listing.id);
       sentAlerts += 1;
-      console.log(`[alert] ${deal.match.model} ${Math.round(deal.finalPrice)} EUR final score=${deal.score} url=${deal.listing.url}`);
+      console.log(`[alerte] ${deal.match.model} ${Math.round(deal.finalPrice)} EUR final score=${deal.score} url=${deal.listing.url}`);
     } catch (error) {
       await store.releaseAlert(deal);
       throw error;
@@ -107,7 +107,7 @@ export async function runScan({
   }
 
   const alertable = scored.filter((item) => item.shouldAlert).length;
-  const bestCandidate = scored[0] ? candidateSummary(scored[0]) : "none";
+  const bestCandidate = scored[0] ? candidateSummary(scored[0]) : "aucun";
   await dashboardStore?.recordDealCandidates(scanRunId, scored, sentListingIds);
   console.log(`[scan] listings=${uniqueListings.length} scored=${scored.length} alertable=${alertable} sent=${sentAlerts} best=${bestCandidate}`);
   return { listings: uniqueListings.length, scored: scored.length, alertable, sent: sentAlerts, bestCandidate };
@@ -120,7 +120,7 @@ function dedupeById(listings: Listing[]): Listing[] {
 }
 
 function candidateSummary(deal: ScoredDeal): string {
-  const riskSummary = deal.risks.length ? `${deal.risks.length} risk notes` : "clean";
+  const riskSummary = deal.risks.length ? `${deal.risks.length} notes de risque` : "propre";
   return `${deal.match.model} ${Math.round(deal.finalPrice)} EUR final, score ${deal.score}, ${riskSummary}`;
 }
 

@@ -27,16 +27,32 @@ const DEFAULT_MODEL_RULES: ModelRule[] = [
   { model: "iPhone 15 Pro Max", enabled: true, storagesGb: [256, 512, 1024] },
   { model: "iPhone 16 Pro", enabled: true, storagesGb: [128, 256, 512, 1024] },
   { model: "iPhone 16 Pro Max", enabled: true, storagesGb: [256, 512, 1024] },
+  { model: "iPhone 17 Pro", enabled: true, storagesGb: [256, 512, 1024] },
+  { model: "iPhone 17 Pro Max", enabled: true, storagesGb: [256, 512, 1024, 2048] },
+  { model: "Samsung Galaxy S22 Plus", enabled: true, storagesGb: [128, 256] },
+  { model: "Samsung Galaxy S23 Plus", enabled: true, storagesGb: [256, 512] },
+  { model: "Samsung Galaxy S24 Plus", enabled: true, storagesGb: [256, 512] },
+  { model: "Samsung Galaxy S25 Plus", enabled: true, storagesGb: [256, 512] },
+  { model: "Samsung Galaxy S26 Plus", enabled: true, storagesGb: [256, 512] },
   { model: "Samsung Galaxy S22 Ultra", enabled: true, storagesGb: [128, 256, 512] },
   { model: "Samsung Galaxy S23 Ultra", enabled: true, storagesGb: [256, 512, 1024] },
   { model: "Samsung Galaxy S24 Ultra", enabled: true, storagesGb: [256, 512, 1024] },
   { model: "Samsung Galaxy S25 Ultra", enabled: true, storagesGb: [256, 512, 1024] },
+  { model: "Samsung Galaxy S26 Ultra", enabled: true, storagesGb: [256, 512, 1024] },
   { model: "Samsung Galaxy Z Fold 4", enabled: true, storagesGb: [256, 512] },
   { model: "Samsung Galaxy Z Fold 5", enabled: true, storagesGb: [256, 512] },
   { model: "Samsung Galaxy Z Fold 6", enabled: true, storagesGb: [256, 512, 1024] },
+  { model: "Samsung Galaxy Z Fold 7", enabled: true, storagesGb: [256, 512, 1024] },
   { model: "Samsung Galaxy Z Flip 4", enabled: true, storagesGb: [128, 256] },
   { model: "Samsung Galaxy Z Flip 5", enabled: true, storagesGb: [256, 512] },
-  { model: "Samsung Galaxy Z Flip 6", enabled: true, storagesGb: [256, 512] }
+  { model: "Samsung Galaxy Z Flip 6", enabled: true, storagesGb: [256, 512] },
+  { model: "Samsung Galaxy Z Flip 7", enabled: true, storagesGb: [256, 512] },
+  { model: "Google Pixel 9 Pro", enabled: true, storagesGb: [128, 256, 512, 1024] },
+  { model: "Google Pixel 9 Pro XL", enabled: true, storagesGb: [128, 256, 512, 1024] },
+  { model: "Google Pixel 9 Pro Fold", enabled: true, storagesGb: [256, 512] },
+  { model: "Google Pixel 10 Pro", enabled: true, storagesGb: [128, 256, 512, 1024] },
+  { model: "Google Pixel 10 Pro XL", enabled: true, storagesGb: [256, 512, 1024] },
+  { model: "Google Pixel 10 Pro Fold", enabled: true, storagesGb: [256, 512, 1024] }
 ];
 
 const DEFAULT_RISK_RULES: RiskRules = {
@@ -69,6 +85,8 @@ export class DashboardStore {
     const modelRow = await this.db.get("select count(*) as count from dashboard_model_rules");
     if (Number(modelRow?.count ?? 0) === 0) {
       await this.replaceModelRules(DEFAULT_MODEL_RULES);
+    } else {
+      await this.ensureMissingModelRules();
     }
 
     const riskRow = await this.db.get("select count(*) as count from dashboard_risk_rules");
@@ -80,7 +98,7 @@ export class DashboardStore {
   async restoreDefaults(searches: SearchConfig[]): Promise<void> {
     await this.db.exec("delete from dashboard_searches; delete from dashboard_model_rules; delete from dashboard_risk_rules;");
     await this.ensureDefaults(searches);
-    await this.log("info", "Dashboard rules restored to defaults");
+    await this.log("info", "Règles restaurées par défaut");
   }
 
   async settingsView(baseConfig: RuntimeConfig): Promise<DashboardSettingsView> {
@@ -132,7 +150,7 @@ export class DashboardStore {
       await this.upsertSetting("authorizedDataApiKey", input.authorizedDataApiKey.trim(), true);
     }
 
-    await this.log("info", "Dashboard settings updated");
+    await this.log("info", "Paramètres du dashboard mis à jour");
   }
 
   async secrets(): Promise<DashboardSecrets> {
@@ -205,7 +223,7 @@ export class DashboardStore {
        values (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [normalized.enabled ? 1 : 0, normalized.query, normalized.url ?? null, normalized.market, normalized.limit, normalized.sort]
     );
-    await this.log("info", `Search created: ${normalized.query || normalized.url || "url"}`);
+    await this.log("info", `Recherche créée : ${normalized.query || normalized.url || "url"}`);
     return this.getSearch(id);
   }
 
@@ -218,14 +236,14 @@ export class DashboardStore {
        where id = ?`,
       [normalized.enabled ? 1 : 0, normalized.query, normalized.url ?? null, normalized.market, normalized.limit, normalized.sort, id]
     );
-    await this.log("info", `Search updated: ${normalized.query || normalized.url || "url"}`);
+    await this.log("info", `Recherche mise à jour : ${normalized.query || normalized.url || "url"}`);
     return this.getSearch(id);
   }
 
   async deleteSearch(id: number): Promise<void> {
     const result = await this.db.run("delete from dashboard_searches where id = ?", [id]);
     if (result.changes === 0) throw new Error("Search not found");
-    await this.log("warn", `Search deleted: ${id}`);
+    await this.log("warn", `Recherche supprimée : ${id}`);
   }
 
   async listModelRules(): Promise<ModelRule[]> {
@@ -236,22 +254,9 @@ export class DashboardStore {
     await this.db.run("delete from dashboard_model_rules");
     for (const rule of rules) {
       const normalized = normalizeModelRule(rule);
-      await this.db.run(
-        `insert into dashboard_model_rules
-          (model, enabled, storages_json, max_final_price, min_score, min_discount, min_savings, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-        [
-          normalized.model,
-          normalized.enabled ? 1 : 0,
-          JSON.stringify(normalized.storagesGb),
-          normalized.maxFinalPrice ?? null,
-          normalized.minScore ?? null,
-          normalized.minDiscount ?? null,
-          normalized.minSavings ?? null
-        ]
-      );
+      await this.insertModelRule(normalized);
     }
-    await this.log("info", "Model rules updated");
+    await this.log("info", "Règles des modèles mises à jour");
     return this.listModelRules();
   }
 
@@ -292,7 +297,7 @@ export class DashboardStore {
         JSON.stringify(normalized.allowedCountries)
       ]
     );
-    await this.log("info", "Risk rules updated");
+    await this.log("info", "Règles de risque mises à jour");
     return this.getRiskRules();
   }
 
@@ -318,7 +323,7 @@ export class DashboardStore {
        where id = ?`,
       [status, result.listings, result.scored, result.alertable, result.sent, result.bestCandidate, error ?? null, id]
     );
-    await this.log(status === "failed" ? "error" : "info", `Scan ${status}: ${result.listings} listings, ${result.sent} alerts sent`);
+    await this.log(status === "failed" ? "error" : "info", `Scan ${status === "failed" ? "échoué" : "réussi"} : ${result.listings} annonces, ${result.sent} alertes envoyées`);
   }
 
   async recordDealCandidates(scanRunId: number | undefined, deals: ScoredDeal[], sentIds: Set<string>): Promise<void> {
@@ -393,6 +398,35 @@ export class DashboardStore {
     const row = await this.db.get("select * from dashboard_searches where id = ?", [id]);
     if (!row) throw new Error("Search not found");
     return searchFromRow(row);
+  }
+
+  private async ensureMissingModelRules(): Promise<void> {
+    const rows = await this.db.all("select model from dashboard_model_rules");
+    const existing = new Set(rows.map((row) => String(row.model)));
+    let inserted = 0;
+    for (const rule of DEFAULT_MODEL_RULES) {
+      if (existing.has(rule.model)) continue;
+      await this.insertModelRule(normalizeModelRule(rule));
+      inserted += 1;
+    }
+    if (inserted > 0) await this.log("info", `${inserted} nouveaux modèles ajoutés aux règles`);
+  }
+
+  private async insertModelRule(normalized: ModelRule): Promise<void> {
+    await this.db.run(
+      `insert into dashboard_model_rules
+        (model, enabled, storages_json, max_final_price, min_score, min_discount, min_savings, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      [
+        normalized.model,
+        normalized.enabled ? 1 : 0,
+        JSON.stringify(normalized.storagesGb),
+        normalized.maxFinalPrice ?? null,
+        normalized.minScore ?? null,
+        normalized.minDiscount ?? null,
+        normalized.minSavings ?? null
+      ]
+    );
   }
 
   private async setting(key: string, fallback: string): Promise<string> {

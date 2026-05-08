@@ -53,16 +53,32 @@ const FALLBACK_MARKET_PRICES: Record<string, number> = {
   "iPhone 15 Pro Max|256": 890,
   "iPhone 16 Pro|128": 900,
   "iPhone 16 Pro Max|256": 1080,
+  "iPhone 17 Pro|256": 1080,
+  "iPhone 17 Pro Max|256": 1280,
+  "Samsung Galaxy S22 Plus|128": 300,
+  "Samsung Galaxy S23 Plus|256": 430,
+  "Samsung Galaxy S24 Plus|256": 570,
+  "Samsung Galaxy S25 Plus|256": 720,
+  "Samsung Galaxy S26 Plus|256": 880,
   "Samsung Galaxy S22 Ultra|128": 360,
   "Samsung Galaxy S23 Ultra|256": 560,
   "Samsung Galaxy S24 Ultra|256": 750,
   "Samsung Galaxy S25 Ultra|256": 920,
+  "Samsung Galaxy S26 Ultra|256": 1100,
   "Samsung Galaxy Z Fold 4|256": 520,
   "Samsung Galaxy Z Fold 5|256": 720,
   "Samsung Galaxy Z Fold 6|256": 980,
+  "Samsung Galaxy Z Fold 7|256": 1180,
   "Samsung Galaxy Z Flip 4|128": 300,
   "Samsung Galaxy Z Flip 5|256": 470,
-  "Samsung Galaxy Z Flip 6|256": 620
+  "Samsung Galaxy Z Flip 6|256": 620,
+  "Samsung Galaxy Z Flip 7|256": 730,
+  "Google Pixel 9 Pro|128": 560,
+  "Google Pixel 9 Pro XL|128": 650,
+  "Google Pixel 9 Pro Fold|256": 950,
+  "Google Pixel 10 Pro|128": 730,
+  "Google Pixel 10 Pro XL|256": 850,
+  "Google Pixel 10 Pro Fold|256": 1150
 };
 
 const MIN_ALERT_SCORE = 82;
@@ -190,7 +206,7 @@ function fallbackPrice(match: PhoneMatch): number | undefined {
 }
 
 function defaultStorage(match: PhoneMatch): number {
-  if (match.model.includes("Pro Max") || match.model.includes("Ultra") || match.model.includes("Fold")) return 256;
+  if (match.model.includes("Pro Max") || match.model.includes("Pro XL") || match.model.includes("Ultra") || match.model.includes("Fold")) return 256;
   return 128;
 }
 
@@ -202,7 +218,7 @@ function storageAdjustment(fromStorage: number, toStorage: number, match: PhoneM
   const toIndex = ordered.indexOf(toStorage);
   if (fromIndex === -1 || toIndex === -1) return 0;
 
-  const stepValue = match.brand === "apple" ? 85 : 65;
+  const stepValue = match.brand === "apple" ? 85 : match.brand === "google" ? 70 : 65;
   return (toIndex - fromIndex) * stepValue;
 }
 
@@ -228,12 +244,21 @@ function alertThreshold(match: PhoneMatch, options: ScoringOptions, modelRule: M
     threshold.minSavings = 90;
   }
 
+  if (match.brand === "google") {
+    threshold.minDiscount = 0.23;
+    threshold.minSavings = 85;
+  }
+
   if (match.tier === "fold") {
     threshold.minScore = 84;
     threshold.minSavings = 120;
   }
 
-  if ((match.brand === "apple" && match.generation >= 16) || match.model.includes("S25")) {
+  if ((match.brand === "apple" && match.generation >= 16) || match.model.includes("S25") || match.model.includes("S26")) {
+    threshold.minSavings = 120;
+  }
+
+  if (match.brand === "google" && match.generation >= 10) {
     threshold.minSavings = 120;
   }
 
@@ -468,16 +493,32 @@ function modelPriceFloor(match: PhoneMatch): number | undefined {
     "iPhone 15 Pro Max": 550,
     "iPhone 16 Pro": 600,
     "iPhone 16 Pro Max": 750,
+    "iPhone 17 Pro": 750,
+    "iPhone 17 Pro Max": 900,
+    "Samsung Galaxy S22 Plus": 220,
+    "Samsung Galaxy S23 Plus": 300,
+    "Samsung Galaxy S24 Plus": 390,
+    "Samsung Galaxy S25 Plus": 500,
+    "Samsung Galaxy S26 Plus": 650,
     "Samsung Galaxy S22 Ultra": 260,
     "Samsung Galaxy S23 Ultra": 380,
     "Samsung Galaxy S24 Ultra": 450,
     "Samsung Galaxy S25 Ultra": 650,
+    "Samsung Galaxy S26 Ultra": 800,
     "Samsung Galaxy Z Fold 4": 350,
     "Samsung Galaxy Z Fold 5": 500,
     "Samsung Galaxy Z Fold 6": 650,
+    "Samsung Galaxy Z Fold 7": 780,
     "Samsung Galaxy Z Flip 4": 220,
     "Samsung Galaxy Z Flip 5": 320,
-    "Samsung Galaxy Z Flip 6": 380
+    "Samsung Galaxy Z Flip 6": 380,
+    "Samsung Galaxy Z Flip 7": 450,
+    "Google Pixel 9 Pro": 380,
+    "Google Pixel 9 Pro XL": 450,
+    "Google Pixel 9 Pro Fold": 600,
+    "Google Pixel 10 Pro": 500,
+    "Google Pixel 10 Pro XL": 620,
+    "Google Pixel 10 Pro Fold": 750
   };
   return floors[match.model];
 }

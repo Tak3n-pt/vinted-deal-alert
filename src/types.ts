@@ -76,14 +76,14 @@ export interface Listing {
   raw: RawListing;
 }
 
-export type Brand = "apple" | "samsung";
+export type Brand = "apple" | "samsung" | "google";
 
 export interface PhoneMatch {
   brand: Brand;
   family: string;
   model: string;
   generation: number;
-  tier: "pro" | "pro-max" | "plus" | "ultra" | "fold" | "flip";
+  tier: "pro" | "pro-max" | "pro-xl" | "plus" | "ultra" | "fold" | "flip";
   storageGb?: number;
   confidence: number;
 }

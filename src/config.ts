@@ -3,14 +3,16 @@ import { resolve } from "node:path";
 import type { RuntimeConfig, SearchConfig } from "./types.js";
 
 export const DEFAULT_SEARCHES: SearchConfig[] = [
-  { market: "FR", query: "iphone 15 pro 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "iphone 15 pro max 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "iphone 16 pro 256go", limit: 10, sort: "newest" },
   { market: "FR", query: "iphone 16 pro max 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "samsung s24 ultra 256go", limit: 10, sort: "newest" },
+  { market: "FR", query: "iphone 17 pro 256go", limit: 10, sort: "newest" },
+  { market: "FR", query: "iphone 17 pro max 256go", limit: 10, sort: "newest" },
   { market: "FR", query: "samsung s25 ultra 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "samsung galaxy z fold 6 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "samsung galaxy z flip 6 256go", limit: 10, sort: "newest" }
+  { market: "FR", query: "samsung s26 ultra 256go", limit: 10, sort: "newest" },
+  { market: "FR", query: "samsung galaxy z fold 7 256go", limit: 10, sort: "newest" },
+  { market: "FR", query: "samsung galaxy z flip 7 256go", limit: 10, sort: "newest" },
+  { market: "FR", query: "google pixel 10 pro 128go", limit: 10, sort: "newest" },
+  { market: "FR", query: "google pixel 10 pro xl 256go", limit: 10, sort: "newest" },
+  { market: "FR", query: "google pixel 10 pro fold 256go", limit: 10, sort: "newest" }
 ];
 
 export function loadDotEnv(path = ".env"): void {

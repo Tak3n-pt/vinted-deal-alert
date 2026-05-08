@@ -1,170 +1,150 @@
 # Vinted Deal Alert
 
-Discord alerts for strong Vinted.fr deals on recent flagship iPhone and Samsung phones.
+Dashboard web et bot Discord pour repérer les bonnes opportunités Vinted.fr sur les smartphones haut de gamme récents.
 
-This project intentionally uses an authorized listing-data API boundary. Vinted restricts external bots, scraping, data mining, and automated account/transaction behavior unless authorized by Vinted. The service does not log in to Vinted, scrape Vinted directly, favorite items, message sellers, add carts, or buy anything.
+Le projet garde volontairement une frontière de données autorisée. Il ne se connecte pas à Vinted, ne scrape pas directement Vinted, ne met pas d’articles en favori, ne contacte pas les vendeurs et n’achète rien automatiquement.
 
-## What It Finds
+## Modèles surveillés
 
-V1 only evaluates:
+V1 couvre maintenant :
 
-- iPhone 13 Pro / Pro Max and newer
-- Samsung Galaxy S22+ / Ultra and newer
-- Samsung Galaxy Z Fold / Flip 4 and newer
+- iPhone 13 Pro / Pro Max à iPhone 17 Pro / Pro Max
+- Samsung Galaxy S22+ / Ultra à Galaxy S26+ / Ultra
+- Samsung Galaxy Z Fold / Flip 4 à Fold / Flip 7
+- Google Pixel 9 Pro / Pro XL / Pro Fold
+- Google Pixel 10 Pro / Pro XL / Pro Fold
 
-It rejects locked, blacklisted, broken, parts-only, replica, dummy, accessory-only, and other high-risk listings. Balanced mode allows cosmetic issues only when the discount is strong.
+Les modèles non Pro, les accessoires, les pièces détachées, les téléphones bloqués, les copies et les annonces trop risquées sont rejetés avant alerte.
 
-## Setup
+## Installation locale
 
-1. Install dependencies:
+1. Installer les dépendances :
 
    ```powershell
    npm install
    ```
 
-2. Copy `.env.example` to `.env` and fill in:
+2. Copier `.env.example` vers `.env`, puis renseigner :
 
    - `PROVIDER_TYPE=apify`
    - `APIFY_TOKEN`
    - `APIFY_ACTOR_ID`
-   - `AUTHORIZED_DATA_API_URL`
-   - `AUTHORIZED_DATA_API_KEY`
    - `DISCORD_WEBHOOK_URL`
    - `PROVIDER_TIMEOUT_SECONDS`
    - `MAX_PRODUCTS_PER_SCAN`
    - `HEARTBEAT_EVERY_SCANS`
 
-   For Apify, `AUTHORIZED_DATA_API_URL` and `AUTHORIZED_DATA_API_KEY` are not used.
-   Locally, the bot uses SQLite at `DATABASE_PATH`. On hosted deployments, set `DATABASE_URL` to a Postgres connection string, for example Neon, so dashboard settings, scan history, and sent-alert tracking survive restarts.
+   Pour Apify, `AUTHORIZED_DATA_API_URL` et `AUTHORIZED_DATA_API_KEY` ne sont pas utilisés.
 
-3. Run a one-shot scan:
+3. Lancer un scan unique :
 
    ```powershell
    npm run once
    ```
 
-4. Run continuously:
+4. Lancer le bot seul :
 
    ```powershell
    npm start
    ```
 
-5. Run the web dashboard:
+5. Lancer le dashboard avec le bot dans le même serveur :
 
    ```powershell
    npm run dashboard
    ```
 
-   The dashboard serves the React UI and the bot scheduler from the same Node process. Set `DASHBOARD_ADMIN_PASSWORD` before exposing it online. Local default is `admin` only as a development fallback. Set `DASHBOARD_COOKIE_SECURE=true` when the app is served through HTTPS.
+   Le dashboard est disponible sur `http://localhost:3000`. Définir `DASHBOARD_ADMIN_PASSWORD` avant toute mise en ligne. En HTTPS, laisser `DASHBOARD_COOKIE_SECURE=true`.
 
-## Authorized Provider Contract
+## Dashboard
+
+Le dashboard permet de gérer :
+
+- statut du bot, pause, reprise et scan manuel,
+- recherches Vinted par requête ou URL filtrée,
+- modèles activés, stockages, prix maximum et seuils,
+- règles de risque vendeur/produit,
+- paramètres Apify, Discord, dry-run et intervalle de scan,
+- historique des scans, opportunités, rejets et logs.
+
+Les secrets sont write-only : le frontend indique seulement si Discord, Apify ou l’API générique sont configurés.
+
+## Provider autorisé
 
 ### Apify
 
-Default Apify provider:
+Configuration par défaut :
 
 ```env
 PROVIDER_TYPE=apify
 APIFY_ACTOR_ID=epicscrapers~vinted-search-scraper
 ```
 
-The bot sends Apify input like:
+Le bot envoie une entrée de ce type :
 
 ```json
 {
   "maxProducts": 10,
   "startUrls": [
     {
-      "url": "https://www.vinted.fr/catalog?search_text=iphone+15+pro+256go&order=newest_first"
+      "url": "https://www.vinted.fr/catalog?search_text=iphone+17+pro+256go&order=newest_first"
     }
   ]
 }
 ```
 
-### Generic Provider
+### API générique
 
-The provider endpoint should accept `POST` JSON:
-
-```json
-{
-  "market": "FR",
-  "query": "iphone 15 pro",
-  "limit": 50,
-  "sort": "newest"
-}
-```
-
-## Cost Controls
-
-The default scan is intentionally narrow:
-
-- 8 searches
-- 10 products each
-- 15-minute interval
-- 100 products maximum per scan
-
-This prevents accidental high Apify spend. If a custom `SEARCH_CONFIG_PATH` requests more than `MAX_PRODUCTS_PER_SCAN`, the bot refuses to start.
-
-For better precision, use copied Vinted.fr filtered URLs in `config.searches.example.json`:
+L’endpoint doit accepter un `POST` JSON :
 
 ```json
 {
   "market": "FR",
-  "url": "https://www.vinted.fr/catalog?search_text=iphone%2015%20pro%20256go&order=newest_first",
-  "query": "iphone 15 pro 256go",
+  "query": "iphone 17 pro",
   "limit": 10,
   "sort": "newest"
 }
 ```
 
-The service accepts common response shapes:
+Le service accepte les réponses sous forme de tableau direct ou sous des clés courantes comme `items`, `products`, `listings` ou `data`.
 
-```json
-{
-  "items": [
-    {
-      "id": "123",
-      "title": "iPhone 15 Pro 256Go",
-      "description": "Tres bon etat",
-      "price": 650,
-      "currency": "EUR",
-      "url": "https://www.vinted.fr/items/123",
-      "imageUrl": "https://...",
-      "sellerRating": 4.9,
-      "sellerReviews": 42,
-      "condition": "Very good",
-      "listedAt": "2026-05-01T10:00:00Z"
-    }
-  ]
-}
-```
+## Contrôle des coûts
 
-Arrays at the top level are also accepted. If your provider uses different field names, adapt `src/provider.ts`.
+Les recherches par défaut restent limitées à 10 requêtes de 10 produits, donc 100 produits maximum par scan avec `MAX_PRODUCTS_PER_SCAN=100`.
 
-## Deal Logic
+Le dashboard permet d’ajouter plus de recherches, mais si la somme des limites dépasse `MAX_PRODUCTS_PER_SCAN`, le bot refuse de démarrer. Augmenter cette limite seulement si le coût provider est maîtrisé.
 
-For each exact model/storage/condition bucket, the bot compares the product against a guarded market benchmark. If enough clean recent listings exist, it blends those prices with the built-in fallback benchmark. Unrealistic history prices are ignored so one broken or fake listing does not pull the benchmark down.
+## Logique de scoring
 
-When exact condition history is thin, the bot can also use related clean history for the same model and storage with lower weight. This keeps the benchmark useful without letting a small set of noisy listings dominate it.
+Pour chaque modèle, stockage et état, le bot compare le prix final à un benchmark. Quand l’historique récent est suffisant, il le mélange avec un prix de marché de secours. Les prix irréalistes sont ignorés pour éviter qu’une annonce cassée ou frauduleuse baisse le benchmark.
 
-The bot does not judge a deal from the raw Vinted item price alone. It uses the best final cost it has:
+Le prix utilisé est :
 
-- the provider's total price when available,
-- otherwise item price plus known service/shipping fields when available,
-- otherwise an estimated final cost using item price plus a small buyer-fee/shipping estimate.
+- le prix total provider quand disponible,
+- sinon le prix article plus frais connus,
+- sinon une estimation du coût final avec frais acheteur et livraison.
 
-An alert is sent only when all of these are true:
+Une alerte est envoyée seulement si :
 
-- score, discount, and savings pass the model-specific threshold,
-- there are no reject or high-risk signals.
+- le score minimum est atteint,
+- la remise et l’économie estimée sont suffisantes,
+- le modèle et le stockage sont activés,
+- le prix final respecte le maximum défini,
+- aucun risque bloquant n’est détecté.
 
-Samsung and Fold models need slightly stronger discounts/savings because their market prices move faster. New top models need higher savings before alerting.
+Les signaux bloquants incluent notamment iCloud/compte bloqué, pièces détachées, écran cassé, prix irréaliste, image manquante selon règle, vendeur trop faible, vendeur trop récent, pays incohérent, doublon photo, batterie trop faible, écran non original ou facture manquante selon règle.
 
-Reject and high-risk signals include locked phones, broken/parts listings, accessory-only results, missing images, very weak seller history on unusually cheap listings, very new seller accounts, seller/item country mismatch on deep discounts, repeated duplicate photos in the same scan, low battery health, non-original screens, and major condition problems like cracked screens.
+Chaque annonce est alertée une seule fois. Elle peut être re-alertée uniquement si le prix baisse d’au moins 10 %.
 
-Each listing is alerted once. It re-alerts only if the same listing drops by at least 10%.
+## Déploiement Render + Neon
 
-`HEARTBEAT_EVERY_SCANS=4` sends a Discord status message every 4 scans so you know the bot is still running even when there are no good deals. The message includes scan counts and the best candidate from the last scan. Set it to `0` to disable heartbeat messages.
+Configuration recommandée pour une v1 sans carte bancaire :
+
+- Build command : `npm ci && npm run build`
+- Start command : `npm run serve`
+- Variables : `NODE_ENV=production`, `DASHBOARD_COOKIE_SECURE=true`, `DATABASE_URL=<connexion Neon>`
+
+Quand `DATABASE_URL` est présent, le dashboard, l’historique et les alertes envoyées utilisent Postgres. Sans `DATABASE_URL`, le projet utilise SQLite localement.
 
 ## Scripts
 
@@ -177,26 +157,3 @@ npm test
 npm run check
 npm run build
 ```
-
-## Dashboard
-
-The dashboard is available on `http://localhost:3000` by default and exposes:
-
-- `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`
-- `/api/status`, `/api/bot/scan-now`, `/api/bot/pause`, `/api/bot/resume`
-- `/api/settings`, `/api/searches`, `/api/model-rules`, `/api/risk-rules`
-- `/api/deals`, `/api/scans`, `/api/logs`
-
-Admin sessions use an HTTP-only cookie. Discord webhook, Apify token, and generic provider key are write-only in the UI: the API only returns whether each secret is configured.
-
-The bot reads dashboard settings, searches, model rules, and risk rules before each scan. If the dashboard tables are empty, it falls back to the original defaults.
-
-## Render + Neon
-
-Use these settings for a no-card hosted v1:
-
-- Build command: `npm ci && npm run build`
-- Start command: `npm run serve`
-- Runtime env: `NODE_ENV=production`, `DASHBOARD_COOKIE_SECURE=true`, `DATABASE_URL=<Neon connection string>`
-
-When `DATABASE_URL` is present, both dashboard data and alert history use Postgres. Without it, the app falls back to local SQLite.

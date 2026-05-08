@@ -41,6 +41,6 @@ test("builds a Discord webhook embed", () => {
   assert.equal(embeds.length, 1);
   assert.match(String(embeds[0]?.title), /iPhone 15 Pro Max/);
   const fields = embeds[0]?.fields as Array<Record<string, string>>;
-  assert.equal(fields.some((field) => field.name === "Final cost used" && field.value === "690 EUR"), true);
+  assert.equal(fields.some((field) => field.name === "Prix final utilisé" && field.value === "690 EUR"), true);
   assert.deepEqual(payload.allowed_mentions, { parse: [] });
 });

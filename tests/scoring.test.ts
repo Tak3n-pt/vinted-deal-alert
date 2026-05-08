@@ -22,7 +22,9 @@ test("scores common storage variants from fallback benchmark", () => {
   const variants = [
     ["iPhone 15 Pro 256Go", 500],
     ["iPhone 15 Pro 512Go", 580],
-    ["Samsung Galaxy S23 Ultra 512Go", 430]
+    ["Samsung Galaxy S23 Ultra 512Go", 430],
+    ["Google Pixel 10 Pro XL 256Go", 610],
+    ["Samsung Galaxy S26 Ultra 256Go", 760]
   ] as const;
 
   for (const [title, price] of variants) {

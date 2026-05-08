@@ -36,7 +36,7 @@ export class BotController {
     const snapshot = await this.dashboardStore.runtimeSnapshot(this.baseConfig, this.fallbackSearches);
     if (snapshot.config.runOnStart) {
       this.guardedScan("startup").catch((error) => {
-        this.dashboardStore.log("error", `Startup scan failed: ${messageFromError(error)}`).catch((logError) => {
+        this.dashboardStore.log("error", `Scan au démarrage échoué : ${messageFromError(error)}`).catch((logError) => {
           console.error(`[dashboard] ${messageFromError(logError)}`);
         });
       });
@@ -52,13 +52,13 @@ export class BotController {
   async pause(): Promise<BotStatus> {
     this.paused = true;
     this.clearTimer();
-    await this.dashboardStore.log("warn", "Bot paused from dashboard");
+    await this.dashboardStore.log("warn", "Bot mis en pause depuis le dashboard");
     return this.status();
   }
 
   async resume(): Promise<BotStatus> {
     this.paused = false;
-    await this.dashboardStore.log("info", "Bot resumed from dashboard");
+    await this.dashboardStore.log("info", "Bot relancé depuis le dashboard");
     this.scheduleNext(1);
     return this.status();
   }
@@ -80,16 +80,16 @@ export class BotController {
   async testDiscord(): Promise<void> {
     const snapshot = await this.dashboardStore.runtimeSnapshot(this.baseConfig, this.fallbackSearches);
     await new DiscordWebhook(snapshot.config).sendStatus("Test dashboard Vinted Deal Alert.");
-    await this.dashboardStore.log("info", "Discord test message sent");
+    await this.dashboardStore.log("info", "Message de test Discord envoyé");
   }
 
   private async guardedScan(source: ScanRunRecord["source"]): Promise<void> {
     if (this.scanInFlight) {
-      await this.dashboardStore.log("warn", "Scan skipped because another scan is already running");
+      await this.dashboardStore.log("warn", "Scan ignoré : un autre scan est déjà en cours");
       return;
     }
     if (this.paused && source === "scheduled") {
-      await this.dashboardStore.log("warn", "Scheduled scan skipped because bot is paused");
+      await this.dashboardStore.log("warn", "Scan planifié ignoré : le bot est en pause");
       return;
     }
 
@@ -113,7 +113,7 @@ export class BotController {
 
       if (snapshot.config.heartbeatEveryScans > 0 && this.scanCount % snapshot.config.heartbeatEveryScans === 0) {
         await discord.sendStatus(
-          `Vinted bot is running. Last scan: ${result.listings} listings, ${result.alertable} alertable, ${result.sent} sent. Best candidate: ${result.bestCandidate}.`
+          `Le bot Vinted fonctionne. Dernier scan : ${result.listings} annonces, ${result.alertable} alertables, ${result.sent} envoyées. Meilleur candidat : ${result.bestCandidate}.`
         );
       }
     } catch (error) {
@@ -139,7 +139,7 @@ export class BotController {
       this.nextScanAt = undefined;
       this.guardedScan("scheduled")
         .catch((error) => {
-          this.dashboardStore.log("error", `Scheduled scan failed: ${messageFromError(error)}`).catch((logError) => {
+          this.dashboardStore.log("error", `Scan planifié échoué : ${messageFromError(error)}`).catch((logError) => {
             console.error(`[dashboard] ${messageFromError(logError)}`);
           });
         })

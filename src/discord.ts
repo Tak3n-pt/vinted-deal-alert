@@ -56,56 +56,56 @@ export class DiscordWebhook {
 export function buildDiscordPayload(deal: ScoredDeal): Record<string, unknown> {
   const riskText = deal.risks.length
     ? deal.risks.map((risk) => `${risk.severity}: ${risk.label}`).join("\n")
-    : "No major risk signals detected";
+    : "Aucun signal de risque majeur détecté";
 
   return {
     username: "Vinted Deal Alert",
     allowed_mentions: { parse: [] },
     embeds: [
       {
-        title: `${deal.match.model}${deal.match.storageGb ? ` ${deal.match.storageGb}GB` : ""} - ${Math.round(deal.finalPrice)} EUR final`,
+        title: `${deal.match.model}${deal.match.storageGb ? ` ${deal.match.storageGb} Go` : ""} - ${Math.round(deal.finalPrice)} EUR final`,
         url: deal.listing.url,
         color: colorForScore(deal.score),
         description: deal.reasons.join("\n"),
         fields: [
           {
-            name: "Deal score",
+            name: "Score",
             value: `${deal.score}/100`,
             inline: true
           },
           {
-            name: "Benchmark",
+            name: "Référence marché",
             value: `${Math.round(deal.benchmarkPrice)} EUR`,
             inline: true
           },
           {
-            name: "Final cost used",
+            name: "Prix final utilisé",
             value: `${Math.round(deal.finalPrice)} EUR`,
             inline: true
           },
           {
-            name: "Discount",
+            name: "Remise",
             value: `${Math.round(deal.discountPercent * 100)}% (${Math.round(deal.savings)} EUR)`,
             inline: true
           },
           {
-            name: "Seller",
+            name: "Vendeur",
             value: sellerText(deal),
             inline: true
           },
           {
-            name: "Condition",
-            value: deal.listing.condition || "Unknown",
+            name: "État",
+            value: deal.listing.condition || "Inconnu",
             inline: true
           },
           {
-            name: "Risk notes",
+            name: "Notes de risque",
             value: truncate(riskText, 900),
             inline: false
           }
         ],
         image: deal.listing.imageUrl ? { url: deal.listing.imageUrl } : undefined,
-        footer: { text: "Manual review required before purchase. Bot does not buy or message sellers." },
+        footer: { text: "Vérification manuelle requise avant achat. Le bot n’achète pas et ne contacte pas les vendeurs." },
         timestamp: new Date().toISOString()
       }
     ]
@@ -113,9 +113,9 @@ export function buildDiscordPayload(deal: ScoredDeal): Record<string, unknown> {
 }
 
 function sellerText(deal: ScoredDeal): string {
-  const name = deal.listing.sellerName ?? "Unknown";
-  const rating = deal.listing.sellerRating !== undefined ? `${deal.listing.sellerRating}/5` : "no rating";
-  const reviews = deal.listing.sellerReviews !== undefined ? `${deal.listing.sellerReviews} reviews` : "no reviews";
+  const name = deal.listing.sellerName ?? "Inconnu";
+  const rating = deal.listing.sellerRating !== undefined ? `${deal.listing.sellerRating}/5` : "sans note";
+  const reviews = deal.listing.sellerReviews !== undefined ? `${deal.listing.sellerReviews} avis` : "sans avis";
   return `${name}\n${rating}, ${reviews}`;
 }
 
