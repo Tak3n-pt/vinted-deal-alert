@@ -1,0 +1,10 @@
+[
+  { "market": "FR", "query": "iphone 15 pro 256go", "limit": 10, "sort": "newest" },
+  { "market": "FR", "query": "iphone 15 pro max 256go", "limit": 10, "sort": "newest" },
+  { "market": "FR", "query": "iphone 16 pro 256go", "limit": 10, "sort": "newest" },
+  { "market": "FR", "query": "iphone 16 pro max 256go", "limit": 10, "sort": "newest" },
+  { "market": "FR", "query": "samsung s24 ultra 256go", "limit": 10, "sort": "newest" },
+  { "market": "FR", "query": "samsung s25 ultra 256go", "limit": 10, "sort": "newest" },
+  { "market": "FR", "query": "samsung galaxy z fold 6 256go", "limit": 10, "sort": "newest" },
+  { "market": "FR", "query": "samsung galaxy z flip 6 256go", "limit": 10, "sort": "newest" }
+]

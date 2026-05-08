@@ -1,0 +1,34 @@
+Comment le bot trouve les produits
+
+Le bot cherche des annonces de téléphones sur Vinted France qui correspondent aux modèles qui t’intéressent.
+
+Il se concentre sur les téléphones récents et haut de gamme, comme les iPhone Pro et Pro Max récents, ainsi que les Samsung Galaxy Ultra, Fold et Flip récents.
+
+À chaque vérification, il :
+
+1. cherche ce type de téléphones sur Vinted ;
+2. ouvre les annonces trouvées ;
+3. ignore tout ce qui semble risqué ou pas intéressant, comme les téléphones cassés, bloqués, faux, ou les annonces qui vendent seulement un accessoire ;
+4. compare le prix avec ce que coûtent normalement des téléphones similaires ;
+5. regarde le vendeur et la fraîcheur de l’annonce ;
+6. t’envoie un message Discord seulement si l’offre paraît vraiment bonne.
+
+Le bot n’achète rien.
+Il n’écrit pas aux vendeurs.
+Il surveille seulement, filtre, compare et t’alerte.
+
+Pourquoi une annonce est retenue
+
+Le bot cherche des téléphones qui sont :
+
+- du bon modèle ;
+- en état acceptable ;
+- vendus par quelqu’un qui ne semble pas suspect ;
+- beaucoup moins chers que la normale.
+
+Si une annonce est trop risquée ou si le prix n’est pas assez intéressant, elle est ignorée.
+
+Pourquoi c’est utile
+
+Au lieu d’envoyer toutes les annonces de téléphones, il n’envoie que celles qui ressemblent à de vraies bonnes affaires.
+Les alertes restent donc plus claires et plus fiables.

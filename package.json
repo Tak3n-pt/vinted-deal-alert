@@ -1,0 +1,37 @@
+{
+  "name": "vinted-deal-alert",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Authorized Vinted.fr flagship phone deal monitor with Discord webhook alerts.",
+  "scripts": {
+    "build": "npm run build:server && npm run dashboard:build",
+    "build:server": "tsc",
+    "dashboard:build": "vite build --config dashboard/vite.config.js",
+    "dashboard": "npm run build && node dist/src/dashboardServer.js",
+    "serve": "node dist/src/dashboardServer.js",
+    "start": "npm run build:server && node dist/src/index.js",
+    "once": "npm run build:server && node dist/src/index.js --once",
+    "sample": "npm run build:server && node dist/src/sample.js",
+    "test": "npm run build:server && node dist/tests/run-tests.js",
+    "check": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "lucide-react": "^1.14.0",
+    "pg": "^8.20.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "vite": "^8.0.11"
+  }
+}

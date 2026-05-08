@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: vinted-deal-alert-dashboard
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run serve
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DASHBOARD_COOKIE_SECURE
+        value: "true"
+      - key: DASHBOARD_PORT
+        value: "3000"

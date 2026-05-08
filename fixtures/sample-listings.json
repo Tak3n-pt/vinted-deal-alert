@@ -1,0 +1,53 @@
+[
+  {
+    "id": "sample-iphone-good",
+    "title": "iPhone 15 Pro Max 256Go",
+    "description": "Tres bon etat, facture disponible, debloque tout operateur.",
+    "price": 620,
+    "currency": "EUR",
+    "url": "https://www.vinted.fr/items/sample-iphone-good",
+    "imageUrl": "https://example.test/iphone.jpg",
+    "sellerName": "phone_seller",
+    "sellerRating": 4.9,
+    "sellerReviews": 55,
+    "condition": "Tres bon etat",
+    "listedAt": "2026-05-01T10:00:00Z"
+  },
+  {
+    "id": "sample-locked",
+    "title": "iPhone 15 Pro Max 256Go pas cher",
+    "description": "iCloud bloque pour pieces.",
+    "price": 350,
+    "currency": "EUR",
+    "url": "https://www.vinted.fr/items/sample-locked",
+    "imageUrl": "https://example.test/locked.jpg",
+    "sellerName": "repair_only",
+    "sellerRating": 4.8,
+    "sellerReviews": 12,
+    "condition": "Pour pieces"
+  },
+  {
+    "id": "sample-samsung-balanced",
+    "title": "Samsung Galaxy S24 Ultra 256Go",
+    "description": "Fonctionne parfaitement, micro rayures, vendu avec boite.",
+    "price": 480,
+    "currency": "EUR",
+    "url": "https://www.vinted.fr/items/sample-samsung-balanced",
+    "imageUrl": "https://example.test/s24.jpg",
+    "sellerName": "galaxy_shop",
+    "sellerRating": 4.8,
+    "sellerReviews": 22,
+    "condition": "Bon etat"
+  },
+  {
+    "id": "sample-accessory",
+    "title": "Coque iPhone 15 Pro Max",
+    "description": "Coque silicone neuve.",
+    "price": 8,
+    "currency": "EUR",
+    "url": "https://www.vinted.fr/items/sample-accessory",
+    "imageUrl": "https://example.test/case.jpg",
+    "sellerRating": 5,
+    "sellerReviews": 100
+  }
+]

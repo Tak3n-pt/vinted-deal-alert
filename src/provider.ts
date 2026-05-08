@@ -1,0 +1,273 @@
+import type { Listing, RawListing, RuntimeConfig, SearchConfig } from "./types.js";
+
+export interface ListingProvider {
+  search(search: SearchConfig): Promise<Listing[]>;
+}
+
+export function createListingProvider(config: RuntimeConfig): ListingProvider {
+  if (config.providerType === "apify") return new ApifyVintedProvider(config);
+  return new AuthorizedListingProvider(config);
+}
+
+export class AuthorizedListingProvider {
+  constructor(private readonly config: RuntimeConfig) {}
+
+  async search(search: SearchConfig): Promise<Listing[]> {
+    if (!this.config.authorizedDataApiUrl || !this.config.authorizedDataApiKey) {
+      throw new Error("AUTHORIZED_DATA_API_URL and AUTHORIZED_DATA_API_KEY are required for generic provider mode");
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.providerTimeoutSeconds * 1000);
+    let response: Response;
+
+    try {
+      response = await fetch(this.config.authorizedDataApiUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.config.authorizedDataApiKey}`
+        },
+        body: JSON.stringify(search),
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(`Authorized provider timed out after ${this.config.providerTimeoutSeconds}s`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`Authorized provider failed ${response.status}: ${body.slice(0, 300)}`);
+    }
+
+    const payload = (await response.json()) as unknown;
+    return extractRawListings(payload).map(normalizeListing).filter((item): item is Listing => item !== null);
+  }
+}
+
+export class ApifyVintedProvider {
+  constructor(private readonly config: RuntimeConfig) {}
+
+  async search(search: SearchConfig): Promise<Listing[]> {
+    if (!this.config.apifyToken) {
+      throw new Error("APIFY_TOKEN is required for Apify provider mode");
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.providerTimeoutSeconds * 1000);
+    const url = new URL(`https://api.apify.com/v2/acts/${encodeURIComponent(this.config.apifyActorId)}/run-sync-get-dataset-items`);
+    url.searchParams.set("token", this.config.apifyToken);
+    url.searchParams.set("clean", "true");
+    url.searchParams.set("format", "json");
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(toApifyInput(search)),
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(`Apify provider timed out after ${this.config.providerTimeoutSeconds}s`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`Apify provider failed ${response.status}: ${body.slice(0, 300)}`);
+    }
+
+    const payload = (await response.json()) as unknown;
+    return extractRawListings(payload).map(normalizeListing).filter((item): item is Listing => item !== null);
+  }
+}
+
+export function toApifyInput(search: SearchConfig): Record<string, unknown> {
+  const url = search.url ? new URL(search.url) : new URL("https://www.vinted.fr/catalog");
+  if (!search.url) {
+    url.searchParams.set("search_text", search.query);
+  }
+  if (!url.searchParams.has("order")) {
+    url.searchParams.set("order", search.sort === "newest" ? "newest_first" : search.sort);
+  }
+
+  return {
+    maxProducts: Math.max(10, search.limit),
+    startUrls: [{ url: url.toString() }]
+  };
+}
+
+export function extractRawListings(payload: unknown): RawListing[] {
+  if (Array.isArray(payload)) return payload as RawListing[];
+  if (!payload || typeof payload !== "object") return [];
+
+  const object = payload as Record<string, unknown>;
+  for (const key of ["items", "listings", "results", "data"]) {
+    const value = object[key];
+    if (Array.isArray(value)) return value as RawListing[];
+    if (value && typeof value === "object") {
+      const nested = value as Record<string, unknown>;
+      if (Array.isArray(nested.items)) return nested.items as RawListing[];
+      if (Array.isArray(nested.results)) return nested.results as RawListing[];
+    }
+  }
+
+  return [];
+}
+
+export function normalizeListing(raw: RawListing): Listing | null {
+  const id = stringValue(raw.id);
+  const title = stringValue(raw.title);
+  const url = stringValue(raw.url) || stringValue(raw.link) || vintedUrlFromPath(raw.path);
+  const itemPrice = priceValue(raw.price);
+  const explicitTotalPrice = priceValue(raw.totalPrice ?? raw.total_item_price);
+  const knownServiceFee = priceValue(raw.service_fee);
+  const knownShipmentPrice = priceValue(raw.shipment_price);
+  const knownAddOns = [knownServiceFee, knownShipmentPrice].filter(Number.isFinite).reduce((total, value) => total + value, 0);
+  const knownTotalPrice = Number.isFinite(explicitTotalPrice)
+    ? explicitTotalPrice
+    : Number.isFinite(itemPrice) && knownAddOns > 0
+      ? itemPrice + knownAddOns
+      : Number.NaN;
+  const price = Number.isFinite(itemPrice) ? itemPrice : knownTotalPrice;
+  if (!id || !title || !url || !Number.isFinite(price) || price <= 0) return null;
+
+  const photoFromArray = Array.isArray(raw.photos) ? mainPhoto(raw.photos) : undefined;
+  const imageUrl =
+    stringValue(raw.imageUrl) ||
+    stringValue(raw.image) ||
+    stringValue(raw.photo?.url) ||
+    (typeof photoFromArray === "string" ? photoFromArray : stringValue(photoFromArray?.full_size_url) || stringValue(photoFromArray?.url));
+
+  const sellerReviews = numberValue(raw.sellerReviews ?? raw.sellerFeedbacks ?? raw.user?.feedback_count);
+  const listing: Listing = {
+    id,
+    title,
+    description: stringValue(raw.description),
+    price,
+    currency: currencyValue(raw),
+    url,
+    raw
+  };
+
+  if (imageUrl) listing.imageUrl = imageUrl;
+  const sellerName = stringValue(raw.sellerName) || stringValue(raw.user?.login);
+  if (sellerName) listing.sellerName = sellerName;
+  const sellerProfileUrl = stringValue(raw.user?.profile_url);
+  if (sellerProfileUrl) listing.sellerProfileUrl = sellerProfileUrl;
+  const sellerJoinedAt = stringValue(raw.sellerJoinedAt) || stringValue(raw.user?.created_at) || stringValue(raw.user?.createdAt);
+  if (sellerJoinedAt) listing.sellerJoinedAt = sellerJoinedAt;
+  const sellerCountry = countryValue(raw.sellerCountry) || countryValue(raw.user?.country_code) || countryValue(raw.user?.country);
+  if (sellerCountry) listing.sellerCountry = sellerCountry;
+  const sellerLocation = stringValue(raw.sellerLocation) || locationValue(raw.user?.city, raw.user?.country);
+  if (sellerLocation) listing.sellerLocation = sellerLocation;
+  const itemCountry = countryValue(raw.itemCountry) || countryValue(raw.country_code) || countryValue(raw.country) || countryValue(raw.country_title);
+  if (itemCountry) listing.itemCountry = itemCountry;
+  const itemLocation = stringValue(raw.itemLocation) || stringValue(raw.location) || locationValue(raw.city, raw.country_title ?? raw.country);
+  if (itemLocation) listing.itemLocation = itemLocation;
+  const sellerRating = numberValue(raw.sellerRating ?? raw.user?.feedback_reputation);
+  if (sellerRating !== undefined) listing.sellerRating = sellerRating;
+  if (sellerReviews !== undefined) listing.sellerReviews = sellerReviews;
+  const sellerItemCount = numberValue(raw.user?.item_count);
+  if (sellerItemCount !== undefined) listing.sellerItemCount = sellerItemCount;
+  if (Number.isFinite(knownTotalPrice) && knownTotalPrice > price) listing.totalPrice = knownTotalPrice;
+  const condition = stringValue(raw.condition) || stringValue(raw.status);
+  if (condition) listing.condition = condition;
+  const brand = stringValue(raw.brand) || stringValue(raw.brand_title);
+  if (brand) listing.brand = brand;
+  const listedAt = stringValue(raw.listedAt) || stringValue(raw.createdAt) || stringValue(raw.date);
+  if (listedAt) listing.listedAt = listedAt;
+  if (typeof raw.favouriteCount === "number") listing.favoriteCount = raw.favouriteCount;
+  if (typeof raw.favourite_count === "number") listing.favoriteCount = raw.favourite_count;
+
+  return listing;
+}
+
+function currencyValue(raw: RawListing): string {
+  if (typeof raw.currency === "string") return raw.currency;
+  if (raw.price && typeof raw.price === "object") {
+    return raw.price.currency_code ?? raw.price.currency ?? "EUR";
+  }
+  return "EUR";
+}
+
+function priceValue(value: RawListing["price"] | RawListing["totalPrice"]): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return parseLocalizedNumber(value);
+  if (value && typeof value === "object") {
+    const amount = value.amount;
+    if (typeof amount === "number") return amount;
+    if (typeof amount === "string") return parseLocalizedNumber(amount);
+  }
+  return Number.NaN;
+}
+
+function parseLocalizedNumber(value: string): number {
+  const normalized = value.replace(/\s/g, "").replace("€", "").replace(",", ".");
+  return Number.parseFloat(normalized);
+}
+
+function stringValue(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return String(value);
+  return "";
+}
+
+function numberValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value.replace(",", "."));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function countryValue(value: unknown): string {
+  const text = stringValue(value).toUpperCase();
+  if (!text) return "";
+  const countryAliases: Record<string, string> = {
+    FRANCE: "FR",
+    FR: "FR",
+    BELGIQUE: "BE",
+    BELGIUM: "BE",
+    BE: "BE",
+    ESPAGNE: "ES",
+    SPAIN: "ES",
+    ES: "ES",
+    ITALIE: "IT",
+    ITALY: "IT",
+    IT: "IT",
+    ALLEMAGNE: "DE",
+    GERMANY: "DE",
+    DE: "DE",
+    PAYS_BAS: "NL",
+    NETHERLANDS: "NL",
+    NL: "NL"
+  };
+  return countryAliases[text] ?? (text.length === 2 ? text : "");
+}
+
+function locationValue(city: unknown, country: unknown): string {
+  return [stringValue(city), stringValue(country)].filter(Boolean).join(", ");
+}
+
+function vintedUrlFromPath(path: unknown): string {
+  const value = stringValue(path);
+  if (!value) return "";
+  return value.startsWith("http") ? value : `https://www.vinted.fr${value.startsWith("/") ? value : `/${value}`}`;
+}
+
+function mainPhoto(photos: NonNullable<RawListing["photos"]>): NonNullable<RawListing["photos"]>[number] | undefined {
+  const objectPhotos = photos.filter((photo): photo is Exclude<typeof photo, string> => typeof photo === "object" && photo !== null);
+  return objectPhotos.find((photo) => photo.is_main) ?? photos[0];
+}
