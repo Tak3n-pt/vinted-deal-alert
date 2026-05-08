@@ -59,12 +59,12 @@ export function loadSearches(maxProductsPerScan = intEnv("MAX_PRODUCTS_PER_SCAN"
 
   const parsed = JSON.parse(readFileSync(resolve(configPath), "utf8")) as unknown;
   if (!Array.isArray(parsed)) {
-    throw new Error("SEARCH_CONFIG_PATH must point to a JSON array of search configs");
+    throw new Error("SEARCH_CONFIG_PATH doit pointer vers un tableau JSON de recherches");
   }
 
   const searches = parsed.map((item) => {
     const search = item as Partial<SearchConfig>;
-    if (!search.query && !search.url) throw new Error("Each search config needs a query or url");
+    if (!search.query && !search.url) throw new Error("Chaque recherche doit avoir une requête ou une URL");
     const normalized: SearchConfig = {
       market: search.market ?? "FR",
       query: search.query ?? "",
@@ -81,8 +81,8 @@ function enforceSearchBudget(searches: SearchConfig[], maxProductsPerScan: numbe
   const requested = searches.reduce((total, search) => total + search.limit, 0);
   if (requested > maxProductsPerScan) {
     throw new Error(
-      `Search config requests ${requested} products per scan, above MAX_PRODUCTS_PER_SCAN=${maxProductsPerScan}. ` +
-        "Narrow the searches or raise MAX_PRODUCTS_PER_SCAN intentionally."
+      `La configuration demande ${requested} produits par scan, au-dessus de MAX_PRODUCTS_PER_SCAN=${maxProductsPerScan}. ` +
+        "Réduire les recherches ou augmenter MAX_PRODUCTS_PER_SCAN volontairement."
     );
   }
   return searches;
@@ -90,7 +90,7 @@ function enforceSearchBudget(searches: SearchConfig[], maxProductsPerScan: numbe
 
 function normalizeLimit(value: number | undefined): number {
   if (value === undefined) return 10;
-  if (!Number.isFinite(value) || value <= 0) throw new Error("Search limit must be a positive number");
+  if (!Number.isFinite(value) || value <= 0) throw new Error("La limite de recherche doit être un nombre positif");
   return Math.max(10, Math.floor(value));
 }
 
@@ -98,7 +98,7 @@ function providerTypeEnv(key: string, fallback: "generic" | "apify"): "generic" 
   const value = process.env[key];
   if (!value) return fallback;
   if (value === "generic" || value === "apify") return value;
-  throw new Error(`${key} must be "generic" or "apify"`);
+  throw new Error(`${key} doit être "generic" ou "apify"`);
 }
 
 function intEnv(key: string, fallback: number): number {
@@ -106,7 +106,7 @@ function intEnv(key: string, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`${key} must be a positive integer`);
+    throw new Error(`${key} doit être un entier positif`);
   }
   return parsed;
 }
@@ -116,7 +116,7 @@ function nonNegativeIntEnv(key: string, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error(`${key} must be a non-negative integer`);
+    throw new Error(`${key} doit être un entier positif ou nul`);
   }
   return parsed;
 }

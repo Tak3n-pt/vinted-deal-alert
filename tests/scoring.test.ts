@@ -80,7 +80,7 @@ test("does not alert when seller history is too weak for a large discount", () =
   }), []);
 
   assert.equal(deal?.shouldAlert, false);
-  assert.equal(deal?.risks.some((risk) => risk.label === "seller has no feedback" && risk.severity === "high"), true);
+  assert.equal(deal?.risks.some((risk) => risk.label === "vendeur sans avis" && risk.severity === "high"), true);
 });
 
 test("does not alert when a deep discount comes from a very new seller account", () => {
@@ -95,7 +95,7 @@ test("does not alert when a deep discount comes from a very new seller account",
   }), []);
 
   assert.equal(deal?.shouldAlert, false);
-  assert.equal(deal?.risks.some((risk) => risk.label === "seller account is very new" && risk.severity === "high"), true);
+  assert.equal(deal?.risks.some((risk) => risk.label === "compte vendeur très récent" && risk.severity === "high"), true);
 });
 
 test("does not alert on deep discount with seller and item country mismatch", () => {
@@ -111,7 +111,7 @@ test("does not alert on deep discount with seller and item country mismatch", ()
   }), []);
 
   assert.equal(deal?.shouldAlert, false);
-  assert.equal(deal?.risks.some((risk) => risk.label === "seller country differs from item country" && risk.severity === "high"), true);
+  assert.equal(deal?.risks.some((risk) => risk.label === "pays vendeur différent du pays de l'article" && risk.severity === "high"), true);
 });
 
 test("uses related clean history when exact condition history is thin", () => {
@@ -161,7 +161,7 @@ test("adds scan-level duplicate photo risk before alerting", () => {
 
   assert.equal(deals.length, 2);
   assert.equal(deals.every((deal) => !deal.shouldAlert), true);
-  assert.equal(deals.every((deal) => deal.risks.some((risk) => risk.label === "duplicate photo appears in current scan" && risk.severity === "high")), true);
+  assert.equal(deals.every((deal) => deal.risks.some((risk) => risk.label === "photo dupliquée dans le scan" && risk.severity === "high")), true);
 });
 
 test("does not alert on high-severity condition risks even with a strong discount", () => {
@@ -175,7 +175,7 @@ test("does not alert on high-severity condition risks even with a strong discoun
   }), []);
 
   assert.equal(deal?.shouldAlert, false);
-  assert.equal(deal?.risks.some((risk) => risk.label === "cracked screen" && risk.severity === "high"), true);
+  assert.equal(deal?.risks.some((risk) => risk.label === "écran cassé" && risk.severity === "high"), true);
 });
 
 test("does not alert on absolute savings alone when score and discount are weak", () => {
@@ -204,7 +204,7 @@ test("does not alert on accessory listings that mention target phone model", () 
     }), []);
 
     assert.equal(deal?.shouldAlert, false, title);
-    assert.equal(deal?.risks.some((risk) => risk.label === "accessory only"), true, title);
+    assert.equal(deal?.risks.some((risk) => risk.label === "accessoire uniquement"), true, title);
   }
 });
 
@@ -219,7 +219,7 @@ test("does not alert on unrealistic low phone prices", () => {
   }), []);
 
   assert.equal(deal?.shouldAlert, false);
-  assert.equal(deal?.risks.some((risk) => risk.label === "unrealistic phone price"), true);
+  assert.equal(deal?.risks.some((risk) => risk.label === "prix téléphone irréaliste"), true);
 });
 
 test("does not alert below model-specific logical market floor", () => {
@@ -233,7 +233,7 @@ test("does not alert below model-specific logical market floor", () => {
   }), []);
 
   assert.equal(deal?.shouldAlert, false);
-  assert.equal(deal?.risks.some((risk) => risk.label.startsWith("below logical market floor")), true);
+  assert.equal(deal?.risks.some((risk) => risk.label.startsWith("prix inférieur au plancher logique")), true);
 });
 
 test("does not alert display or bundle results from live searches", () => {
@@ -284,7 +284,7 @@ test("dashboard model rule blocks disabled models", () => {
   });
 
   assert.equal(deal?.shouldAlert, false);
-  assert.equal(deal?.rejectionReasons.some((reason) => reason.includes("disabled")), true);
+  assert.equal(deal?.rejectionReasons.some((reason) => reason.includes("désactivé")), true);
 });
 
 test("dashboard max final price blocks expensive alerts", () => {
@@ -305,7 +305,7 @@ test("dashboard max final price blocks expensive alerts", () => {
   });
 
   assert.equal(deal?.shouldAlert, false);
-  assert.equal(deal?.rejectionReasons.some((reason) => reason.includes("above dashboard max")), true);
+  assert.equal(deal?.rejectionReasons.some((reason) => reason.includes("supérieur au maximum dashboard")), true);
 });
 
 function listing(input: Partial<Listing>): Listing {

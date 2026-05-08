@@ -172,7 +172,7 @@ function App() {
         </nav>
 
         <div className="side-status">
-          <Badge tone={settings?.dryRun ? "warn" : "good"}>{settings?.dryRun ? "Dry-run" : "Alertes réelles"}</Badge>
+          <Badge tone={settings?.dryRun ? "warn" : "good"}>{settings?.dryRun ? "Simulation" : "Alertes réelles"}</Badge>
           <span>{settings?.providerType === "apify" ? "Apify" : "API générique"}</span>
         </div>
 
@@ -286,7 +286,7 @@ function DashboardPage({ status, settings, searches, modelRules, deals, scans, l
   return (
     <section className="stack">
       <div className="metric-grid">
-        <Metric icon={Bot} label="État du bot" value={botStateLabel(status)} sub={settings?.dryRun ? "Dry-run actif" : "Alertes Discord actives"} tone={status?.paused ? "warn" : "good"} />
+        <Metric icon={Bot} label="État du bot" value={botStateLabel(status)} sub={settings?.dryRun ? "Simulation active" : "Alertes Discord actives"} tone={status?.paused ? "warn" : "good"} />
         <Metric icon={Clock3} label="Dernier scan" value={lastScan ? `${lastScan.listings} annonces` : "Aucun"} sub={lastScan ? tStatus(lastScan.status) : "En attente"} />
         <Metric icon={Bell} label="Alertes" value={sentCount} sub={`${alertableCount} opportunités alertables`} tone="accent" />
         <Metric icon={Smartphone} label="Couverture" value={`${enabledModels} modèles`} sub={`${activeSearches} recherches actives`} />
@@ -479,7 +479,7 @@ function SettingsPage({ settings, setSettings, runAction }) {
   return (
     <section className="panel form-grid settings-form">
       <PanelTitle icon={Settings} title="Configuration serveur" />
-      <label>Provider
+      <label>Source de données
         <select value={settings.providerType} onChange={(event) => setSettings({ ...settings, providerType: event.target.value })}>
           <option value="apify">Apify</option>
           <option value="generic">API générique</option>
@@ -488,14 +488,14 @@ function SettingsPage({ settings, setSettings, runAction }) {
       <label>Acteur Apify<input value={settings.apifyActorId} onChange={(event) => setSettings({ ...settings, apifyActorId: event.target.value })} /></label>
       <label>URL API générique<input value={settings.authorizedDataApiUrl} onChange={(event) => setSettings({ ...settings, authorizedDataApiUrl: event.target.value })} /></label>
       <label>Intervalle de scan<input type="number" value={settings.pollIntervalSeconds} onChange={(event) => setSettings({ ...settings, pollIntervalSeconds: numberValue(event.target.value) })} /></label>
-      <label>Timeout provider<input type="number" value={settings.providerTimeoutSeconds} onChange={(event) => setSettings({ ...settings, providerTimeoutSeconds: numberValue(event.target.value) })} /></label>
+      <label>Délai source<input type="number" value={settings.providerTimeoutSeconds} onChange={(event) => setSettings({ ...settings, providerTimeoutSeconds: numberValue(event.target.value) })} /></label>
       <label>Produits max<input type="number" value={settings.maxProductsPerScan} onChange={(event) => setSettings({ ...settings, maxProductsPerScan: numberValue(event.target.value) })} /></label>
-      <label>Heartbeat<input type="number" value={settings.heartbeatEveryScans} onChange={(event) => setSettings({ ...settings, heartbeatEveryScans: numberValue(event.target.value) })} /></label>
+      <label>Message de suivi<input type="number" value={settings.heartbeatEveryScans} onChange={(event) => setSettings({ ...settings, heartbeatEveryScans: numberValue(event.target.value) })} /></label>
       <label>Score minimum<input type="number" value={settings.minScore} onChange={(event) => setSettings({ ...settings, minScore: numberValue(event.target.value) })} /></label>
       <label>Remise minimum<input type="number" step="0.01" value={settings.minDiscount} onChange={(event) => setSettings({ ...settings, minDiscount: numberValue(event.target.value) })} /></label>
       <label>Économie minimum<input type="number" value={settings.minSavings} onChange={(event) => setSettings({ ...settings, minSavings: numberValue(event.target.value) })} /></label>
       <label className="checkbox"><input type="checkbox" checked={settings.runOnStart} onChange={(event) => setSettings({ ...settings, runOnStart: event.target.checked })} /> Scan au démarrage</label>
-      <label className="checkbox"><input type="checkbox" checked={settings.dryRun} onChange={(event) => setSettings({ ...settings, dryRun: event.target.checked })} /> Dry-run</label>
+      <label className="checkbox"><input type="checkbox" checked={settings.dryRun} onChange={(event) => setSettings({ ...settings, dryRun: event.target.checked })} /> Mode simulation</label>
       <label>Webhook Discord <SecretState configured={settings.discordWebhookConfigured} /><input value={secrets.discordWebhookUrl} onChange={(event) => setSecrets({ ...secrets, discordWebhookUrl: event.target.value })} placeholder="remplacement uniquement" /></label>
       <label>Token Apify <SecretState configured={settings.apifyTokenConfigured} /><input value={secrets.apifyToken} onChange={(event) => setSecrets({ ...secrets, apifyToken: event.target.value })} placeholder="remplacement uniquement" /></label>
       <label>Clé API générique <SecretState configured={settings.authorizedDataApiKeyConfigured} /><input value={secrets.authorizedDataApiKey} onChange={(event) => setSecrets({ ...secrets, authorizedDataApiKey: event.target.value })} placeholder="remplacement uniquement" /></label>
@@ -680,6 +680,16 @@ function translateReason(reason) {
     .replace("score below", "score inférieur à")
     .replace("discount below", "remise inférieure à")
     .replace("savings below", "économie inférieure à")
+    .replace("below logical market floor", "prix inférieur au plancher logique")
+    .replace("seller has no feedback", "vendeur sans avis")
+    .replace("seller history too weak for discount", "historique vendeur trop faible pour cette remise")
+    .replace("seller account is very new", "compte vendeur très récent")
+    .replace("seller account is new for this discount", "compte vendeur récent pour cette remise")
+    .replace("seller country differs from item country", "pays vendeur différent du pays de l'article")
+    .replace("description too short", "description trop courte")
+    .replace("missing image", "image absente")
+    .replace("unrealistic phone price", "prix téléphone irréaliste")
+    .replace("accessory only", "accessoire uniquement")
     .replace("rejected", "rejeté");
 }
 

@@ -20,7 +20,7 @@ async function main(): Promise<void> {
 
   const runGuardedScan = async (): Promise<void> => {
     if (scanInFlight) {
-      console.warn("[scan] skipped because previous scan is still running");
+      console.warn("[scan] ignoré car le scan précédent est encore en cours");
       return;
     }
 
@@ -109,7 +109,7 @@ export async function runScan({
   const alertable = scored.filter((item) => item.shouldAlert).length;
   const bestCandidate = scored[0] ? candidateSummary(scored[0]) : "aucun";
   await dashboardStore?.recordDealCandidates(scanRunId, scored, sentListingIds);
-  console.log(`[scan] listings=${uniqueListings.length} scored=${scored.length} alertable=${alertable} sent=${sentAlerts} best=${bestCandidate}`);
+  console.log(`[scan] annonces=${uniqueListings.length} scorées=${scored.length} alertables=${alertable} envoyées=${sentAlerts} meilleur=${bestCandidate}`);
   return { listings: uniqueListings.length, scored: scored.length, alertable, sent: sentAlerts, bestCandidate };
 }
 

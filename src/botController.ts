@@ -79,7 +79,7 @@ export class BotController {
 
   async testDiscord(): Promise<void> {
     const snapshot = await this.dashboardStore.runtimeSnapshot(this.baseConfig, this.fallbackSearches);
-    await new DiscordWebhook(snapshot.config).sendStatus("Test dashboard Vinted Deal Alert.");
+    await new DiscordWebhook(snapshot.config).sendStatus("Test du dashboard Vinted Deal Alert.");
     await this.dashboardStore.log("info", "Message de test Discord envoyé");
   }
 
@@ -120,7 +120,7 @@ export class BotController {
       await this.dashboardStore.completeScanRun(
         runId,
         "failed",
-        { listings: 0, scored: 0, alertable: 0, sent: 0, bestCandidate: "none" },
+        { listings: 0, scored: 0, alertable: 0, sent: 0, bestCandidate: "aucun" },
         messageFromError(error)
       );
       throw error;

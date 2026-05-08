@@ -32,7 +32,7 @@ test("builds a Discord webhook embed", () => {
     savings: 240,
     score: 91,
     risks: [],
-    reasons: ["27% below benchmark"],
+    reasons: ["27% sous la référence"],
     rejectionReasons: [],
     shouldAlert: true
   } satisfies ScoredDeal);

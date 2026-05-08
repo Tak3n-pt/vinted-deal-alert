@@ -114,7 +114,7 @@ test("times out hung provider requests", async () => {
     const provider = new AuthorizedListingProvider(config({ providerTimeoutSeconds: 0.01 }));
     await assert.rejects(
       provider.search({ market: "FR", query: "iphone 15 pro", limit: 1, sort: "newest" }),
-      /timed out/
+      /expiré/
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -137,7 +137,7 @@ test("times out hung Apify requests", async () => {
     }));
     await assert.rejects(
       provider.search({ market: "FR", query: "iphone 15 pro", limit: 1, sort: "newest" }),
-      /timed out/
+      /expiré/
     );
   } finally {
     globalThis.fetch = originalFetch;

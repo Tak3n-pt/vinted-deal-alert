@@ -10,7 +10,7 @@ export class DiscordWebhook {
       return;
     }
     if (!this.config.discordWebhookUrl) {
-      throw new Error("DISCORD_WEBHOOK_URL is required when DRY_RUN=false");
+      throw new Error("DISCORD_WEBHOOK_URL est requis quand DRY_RUN=false");
     }
 
     const response = await fetch(`${this.config.discordWebhookUrl}?wait=true`, {
@@ -21,7 +21,7 @@ export class DiscordWebhook {
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Discord webhook failed ${response.status}: ${body.slice(0, 300)}`);
+      throw new Error(`Webhook Discord en échec ${response.status} : ${body.slice(0, 300)}`);
     }
   }
 
@@ -37,7 +37,7 @@ export class DiscordWebhook {
       return;
     }
     if (!this.config.discordWebhookUrl) {
-      throw new Error("DISCORD_WEBHOOK_URL is required when DRY_RUN=false");
+      throw new Error("DISCORD_WEBHOOK_URL est requis quand DRY_RUN=false");
     }
 
     const response = await fetch(`${this.config.discordWebhookUrl}?wait=true`, {
@@ -48,7 +48,7 @@ export class DiscordWebhook {
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Discord webhook failed ${response.status}: ${body.slice(0, 300)}`);
+      throw new Error(`Webhook Discord en échec ${response.status} : ${body.slice(0, 300)}`);
     }
   }
 }

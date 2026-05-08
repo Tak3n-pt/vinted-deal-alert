@@ -227,7 +227,7 @@ function modelPriceRisks(finalPrice: number, match: PhoneMatch): RiskSignal[] {
   if (!floor || finalPrice >= floor) return [];
   return [{
     code: "below-logical-market-floor",
-    label: `below logical market floor (${floor} EUR)`,
+    label: `prix inférieur au plancher logique (${floor} EUR)`,
     severity: "reject"
   }];
 }
@@ -300,31 +300,31 @@ function dealRejectionReasons({
   const reasons: string[] = [];
 
   if (modelRule?.enabled === false) {
-    reasons.push(`${match.model} disabled in dashboard rules`);
+    reasons.push(`${match.model} désactivé dans les règles du dashboard`);
   }
 
   const storage = match.storageGb ?? defaultStorage(match);
   if (modelRule && modelRule.storagesGb.length > 0 && !modelRule.storagesGb.includes(storage)) {
-    reasons.push(`${storage}GB storage is not enabled for ${match.model}`);
+    reasons.push(`stockage ${storage} Go non activé pour ${match.model}`);
   }
 
   if (modelRule?.maxFinalPrice !== undefined && finalPrice > modelRule.maxFinalPrice) {
-    reasons.push(`final price above dashboard max (${Math.round(modelRule.maxFinalPrice)} EUR)`);
+    reasons.push(`prix final supérieur au maximum dashboard (${Math.round(modelRule.maxFinalPrice)} EUR)`);
   }
 
   const blockingRisks = risks.filter((risk) => isBlockingRisk(risk, riskRules));
   if (blockingRisks.length > 0) {
-    reasons.push(...blockingRisks.map((risk) => `blocked risk: ${risk.label}`));
+    reasons.push(...blockingRisks.map((risk) => `risque bloquant : ${risk.label}`));
   }
 
   if (score < threshold.minScore) {
-    reasons.push(`score below ${threshold.minScore}`);
+    reasons.push(`score inférieur à ${threshold.minScore}`);
   }
   if (discountPercent < threshold.minDiscount) {
-    reasons.push(`discount below ${Math.round(threshold.minDiscount * 100)}%`);
+    reasons.push(`remise inférieure à ${Math.round(threshold.minDiscount * 100)}%`);
   }
   if (savings < threshold.minSavings) {
-    reasons.push(`savings below ${Math.round(threshold.minSavings)} EUR`);
+    reasons.push(`économie inférieure à ${Math.round(threshold.minSavings)} EUR`);
   }
 
   return [...new Set(reasons)];
@@ -346,7 +346,7 @@ function dashboardRiskSignals(listing: Listing, rules: RiskRules | undefined): R
   if (rules.minSellerReviews > 0 && reviews < rules.minSellerReviews) {
     signals.push({
       code: "dashboard-min-seller-reviews",
-      label: `seller has fewer than ${rules.minSellerReviews} reviews`,
+      label: `vendeur avec moins de ${rules.minSellerReviews} avis`,
       severity: "high"
     });
   }
@@ -355,7 +355,7 @@ function dashboardRiskSignals(listing: Listing, rules: RiskRules | undefined): R
   if (rules.minSellerRating > 0 && rating < rules.minSellerRating) {
     signals.push({
       code: "dashboard-min-seller-rating",
-      label: `seller rating below ${rules.minSellerRating}`,
+      label: `note vendeur sous ${rules.minSellerRating}`,
       severity: "high"
     });
   }
@@ -365,7 +365,7 @@ function dashboardRiskSignals(listing: Listing, rules: RiskRules | undefined): R
     if (itemCountry && !rules.allowedCountries.includes(itemCountry)) {
       signals.push({
         code: "dashboard-country-not-allowed",
-        label: `country ${itemCountry} is not allowed`,
+        label: `pays ${itemCountry} non autorisé`,
         severity: "high"
       });
     }
@@ -376,7 +376,7 @@ function dashboardRiskSignals(listing: Listing, rules: RiskRules | undefined): R
   if (batteryHealth !== undefined && rules.minBatteryHealth > 0 && batteryHealth < rules.minBatteryHealth) {
     signals.push({
       code: "dashboard-min-battery-health",
-      label: `battery health below ${rules.minBatteryHealth}%`,
+      label: `batterie sous ${rules.minBatteryHealth}%`,
       severity: "high"
     });
   }
@@ -384,7 +384,7 @@ function dashboardRiskSignals(listing: Listing, rules: RiskRules | undefined): R
   if (rules.rejectScreenReplaced && /\b(?:ecran|[eé]cran|screen)\s*(?:chang[eé]?|remplac[eé]?)\b/i.test(text)) {
     signals.push({
       code: "dashboard-screen-replaced-blocked",
-      label: "screen replacement blocked by dashboard",
+      label: "écran remplacé bloqué par le dashboard",
       severity: "high"
     });
   }
@@ -392,7 +392,7 @@ function dashboardRiskSignals(listing: Listing, rules: RiskRules | undefined): R
   if (rules.rejectMissingInvoice && /\b(?:sans\s*facture|no\s*invoice|facture\s*perdue)\b/i.test(text)) {
     signals.push({
       code: "dashboard-missing-invoice-blocked",
-      label: "missing invoice blocked by dashboard",
+      label: "facture absente bloquée par le dashboard",
       severity: "high"
     });
   }
@@ -408,13 +408,13 @@ function sellerRiskSignals(listing: Listing, discountPercent: number): RiskSigna
   if (reviews === 0 && !hasRating) {
     signals.push({
       code: "seller-has-no-feedback",
-      label: "seller has no feedback",
+      label: "vendeur sans avis",
       severity: discountPercent >= 0.3 ? "high" : "medium"
     });
   } else if (reviews < 3 && discountPercent >= 0.3) {
     signals.push({
       code: "seller-history-too-weak-for-discount",
-      label: "seller history too weak for discount",
+      label: "historique vendeur trop faible pour cette remise",
       severity: "high"
     });
   }
@@ -422,7 +422,7 @@ function sellerRiskSignals(listing: Listing, discountPercent: number): RiskSigna
   if (listing.sellerItemCount !== undefined && listing.sellerItemCount > 150) {
     signals.push({
       code: "seller-has-too-many-active-items",
-      label: "seller has unusually many active items",
+      label: "vendeur avec beaucoup d'articles actifs",
       severity: "medium"
     });
   }
@@ -431,13 +431,13 @@ function sellerRiskSignals(listing: Listing, discountPercent: number): RiskSigna
   if (ageDays !== undefined && ageDays < 30) {
     signals.push({
       code: "seller-account-too-new",
-      label: "seller account is very new",
+      label: "compte vendeur très récent",
       severity: discountPercent >= 0.25 ? "high" : "medium"
     });
   } else if (ageDays !== undefined && ageDays < 90 && discountPercent >= 0.3) {
     signals.push({
       code: "seller-account-new-for-discount",
-      label: "seller account is new for this discount",
+      label: "compte vendeur récent pour cette remise",
       severity: "medium"
     });
   }
@@ -445,7 +445,7 @@ function sellerRiskSignals(listing: Listing, discountPercent: number): RiskSigna
   if (listing.sellerCountry && listing.itemCountry && listing.sellerCountry !== listing.itemCountry) {
     signals.push({
       code: "seller-item-country-mismatch",
-      label: "seller country differs from item country",
+      label: "pays vendeur différent du pays de l'article",
       severity: discountPercent >= 0.35 ? "high" : "medium"
     });
   }
@@ -453,7 +453,7 @@ function sellerRiskSignals(listing: Listing, discountPercent: number): RiskSigna
   if (listing.description.trim().length < 20) {
     signals.push({
       code: "description-too-short",
-      label: "description too short",
+      label: "description trop courte",
       severity: "medium"
     });
   }
@@ -563,7 +563,7 @@ function scanRiskMap(listings: Listing[]): Map<string, RiskSignal[]> {
     for (const listing of group) {
       addScanRisk(risks, listing.id, {
         code: "seller-repeats-same-model-in-scan",
-        label: "seller repeats same model in current scan",
+        label: "vendeur répétant le même modèle dans le scan",
         severity: "medium"
       });
     }
@@ -576,7 +576,7 @@ function scanRiskMap(listings: Listing[]): Map<string, RiskSignal[]> {
     for (const listing of group) {
       addScanRisk(risks, listing.id, {
         code: "duplicate-photo-in-current-scan",
-        label: "duplicate photo appears in current scan",
+        label: "photo dupliquée dans le scan",
         severity
       });
     }
@@ -614,12 +614,12 @@ function dealReasons(
   risks: RiskSignal[]
 ): string[] {
   const reasons = [
-    `${Math.round(discountPercent * 100)}% below benchmark`,
-    `${Math.round(savings)} EUR estimated savings`
+    `${Math.round(discountPercent * 100)}% sous la référence`,
+    `${Math.round(savings)} EUR d'économie estimée`
   ];
-  if (sellerScore >= 10) reasons.push("seller has strong feedback");
-  if (freshnessScore >= 5) reasons.push("fresh listing");
-  if (risks.length) reasons.push(`risk notes: ${risks.map((risk) => risk.label).join(", ")}`);
+  if (sellerScore >= 10) reasons.push("vendeur bien noté");
+  if (freshnessScore >= 5) reasons.push("annonce récente");
+  if (risks.length) reasons.push(`notes de risque : ${risks.map((risk) => risk.label).join(", ")}`);
   return reasons;
 }
 

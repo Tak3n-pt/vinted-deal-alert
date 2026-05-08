@@ -14,7 +14,7 @@ export class AuthorizedListingProvider {
 
   async search(search: SearchConfig): Promise<Listing[]> {
     if (!this.config.authorizedDataApiUrl || !this.config.authorizedDataApiKey) {
-      throw new Error("AUTHORIZED_DATA_API_URL and AUTHORIZED_DATA_API_KEY are required for generic provider mode");
+      throw new Error("AUTHORIZED_DATA_API_URL et AUTHORIZED_DATA_API_KEY sont requis pour la source générique");
     }
 
     const controller = new AbortController();
@@ -33,7 +33,7 @@ export class AuthorizedListingProvider {
       });
     } catch (error) {
       if (controller.signal.aborted) {
-        throw new Error(`Authorized provider timed out after ${this.config.providerTimeoutSeconds}s`);
+        throw new Error(`Délai de la source autorisée expiré après ${this.config.providerTimeoutSeconds}s`);
       }
       throw error;
     } finally {
@@ -42,7 +42,7 @@ export class AuthorizedListingProvider {
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Authorized provider failed ${response.status}: ${body.slice(0, 300)}`);
+      throw new Error(`Source autorisée en échec ${response.status} : ${body.slice(0, 300)}`);
     }
 
     const payload = (await response.json()) as unknown;
@@ -55,7 +55,7 @@ export class ApifyVintedProvider {
 
   async search(search: SearchConfig): Promise<Listing[]> {
     if (!this.config.apifyToken) {
-      throw new Error("APIFY_TOKEN is required for Apify provider mode");
+      throw new Error("APIFY_TOKEN est requis pour la source Apify");
     }
 
     const controller = new AbortController();
@@ -75,7 +75,7 @@ export class ApifyVintedProvider {
       });
     } catch (error) {
       if (controller.signal.aborted) {
-        throw new Error(`Apify provider timed out after ${this.config.providerTimeoutSeconds}s`);
+        throw new Error(`Délai de la source Apify expiré après ${this.config.providerTimeoutSeconds}s`);
       }
       throw error;
     } finally {
@@ -84,7 +84,7 @@ export class ApifyVintedProvider {
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Apify provider failed ${response.status}: ${body.slice(0, 300)}`);
+      throw new Error(`Source Apify en échec ${response.status} : ${body.slice(0, 300)}`);
     }
 
     const payload = (await response.json()) as unknown;

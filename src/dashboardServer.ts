@@ -55,7 +55,7 @@ export async function startDashboardServer(port = Number(process.env.PORT ?? pro
 
   const adminPassword = process.env.DASHBOARD_ADMIN_PASSWORD ?? process.env.ADMIN_PASSWORD ?? "admin";
   if (adminPassword === "admin") {
-    console.warn("[dashboard] Using default admin password: admin. Set DASHBOARD_ADMIN_PASSWORD before deploying.");
+    console.warn("[dashboard] Mot de passe admin par défaut utilisé : admin. Définir DASHBOARD_ADMIN_PASSWORD avant tout déploiement.");
   }
 
   const handler = createDashboardHandler({
@@ -88,7 +88,7 @@ async function handleRequest(
     return;
   }
 
-  if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "Method not allowed");
+  if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "Méthode non autorisée");
   await serveStatic(res, url.pathname, staticDir, req.method === "HEAD");
 }
 
@@ -101,11 +101,11 @@ async function handleApi(
 ): Promise<void> {
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
     const loginKey = clientKey(req);
-    if (isLoginLimited(loginAttempts, loginKey)) throw new HttpError(429, "Too many login attempts. Try again later.");
+    if (isLoginLimited(loginAttempts, loginKey)) throw new HttpError(429, "Trop de tentatives de connexion. Réessayer plus tard.");
     const body = await readJson<{ password?: string }>(req);
     if (!safePasswordEquals(body.password ?? "", adminPassword)) {
       recordFailedLogin(loginAttempts, loginKey);
-      throw new HttpError(401, "Invalid password");
+      throw new HttpError(401, "Mot de passe invalide");
     }
     loginAttempts.delete(loginKey);
     const token = randomBytes(32).toString("base64url");
@@ -122,7 +122,7 @@ async function handleApi(
 
   const token = sessionToken(req);
   if (!token || !(await dashboardStore.validateSession(hashToken(token)))) {
-    throw new HttpError(401, "Authentication required");
+    throw new HttpError(401, "Authentification requise");
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
@@ -201,7 +201,7 @@ async function handleApi(
   if (req.method === "PUT" && url.pathname === "/api/model-rules") {
     const body = await readJson<{ modelRules?: unknown } | unknown[]>(req);
     const modelRules = Array.isArray(body) ? body : body.modelRules;
-    if (!Array.isArray(modelRules)) throw new HttpError(400, "modelRules must be an array");
+    if (!Array.isArray(modelRules)) throw new HttpError(400, "modelRules doit être un tableau");
     sendJson(res, 200, { modelRules: await dashboardStore.replaceModelRules(modelRules as ModelRule[]) });
     return;
   }
@@ -233,7 +233,7 @@ async function handleApi(
     return;
   }
 
-  throw new HttpError(404, "Route not found");
+  throw new HttpError(404, "Route introuvable");
 }
 
 async function serveStatic(res: ServerResponse, pathname: string, staticDir: string, headOnly: boolean): Promise<void> {
@@ -242,7 +242,7 @@ async function serveStatic(res: ServerResponse, pathname: string, staticDir: str
   const filePath = resolve(staticDir, candidate);
   const safeRelative = relative(staticDir, filePath);
   if (safeRelative.startsWith("..") || safeRelative === "") {
-    throw new HttpError(403, "Forbidden");
+    throw new HttpError(403, "Accès interdit");
   }
 
   try {
@@ -251,7 +251,7 @@ async function serveStatic(res: ServerResponse, pathname: string, staticDir: str
     if (!headOnly) res.end(content);
     else res.end();
   } catch {
-    if (extname(candidate)) throw new HttpError(404, "File not found");
+    if (extname(candidate)) throw new HttpError(404, "Fichier introuvable");
     const index = await readFile(resolve(staticDir, "index.html"));
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" });
     if (!headOnly) res.end(index);
