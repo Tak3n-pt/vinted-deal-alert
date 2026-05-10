@@ -14,6 +14,18 @@ export interface DashboardSettingsView {
   minScore: number;
   minDiscount: number;
   minSavings: number;
+  /** Required price drop to re-alert the same listing. 0.10 = 10% drop. */
+  reAlertDropPercent: number;
+  /** Cap on Discord alerts per single scan. 0 = unlimited. */
+  maxAlertsPerScan: number;
+  /** Cap on Discord alerts in any 24h rolling window. 0 = unlimited. */
+  maxAlertsPerDay: number;
+  /** When true, alerts are still computed but Discord is muted in the window. */
+  quietHoursEnabled: boolean;
+  /** "HH:MM" 24h, server local time. Inclusive. */
+  quietHoursStart: string;
+  /** "HH:MM" 24h, server local time. Exclusive. Allowed to wrap past midnight. */
+  quietHoursEnd: string;
   discordWebhookConfigured: boolean;
   apifyTokenConfigured: boolean;
   authorizedDataApiKeyConfigured: boolean;
@@ -35,6 +47,12 @@ export interface DashboardSettingsInput {
   minScore?: number;
   minDiscount?: number;
   minSavings?: number;
+  reAlertDropPercent?: number;
+  maxAlertsPerScan?: number;
+  maxAlertsPerDay?: number;
+  quietHoursEnabled?: boolean;
+  quietHoursStart?: string;
+  quietHoursEnd?: string;
 }
 
 export interface DashboardSecrets {
@@ -110,10 +128,25 @@ export interface DashboardLogRecord {
   createdAt: string;
 }
 
+/**
+ * Alert delivery controls — distinct from scoring options, which decide
+ * whether a listing qualifies as a deal at all. These shape *whether and how
+ * often* qualifying deals get pushed to Discord.
+ */
+export interface AlertDeliveryOptions {
+  reAlertDropPercent: number;
+  maxAlertsPerScan: number;
+  maxAlertsPerDay: number;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+}
+
 export interface DashboardRuntimeSnapshot {
   config: RuntimeConfig;
   searches: SearchConfig[];
   scoringOptions: ScoringOptions;
+  delivery: AlertDeliveryOptions;
 }
 
 export type { ModelRule, RiskRules, ScoringOptions };

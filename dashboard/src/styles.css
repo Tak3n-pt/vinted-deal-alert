@@ -507,8 +507,97 @@ td.num,
   align-items: end;
 }
 
-.form-grid > h2 {
+.form-grid > h2,
+.form-grid > h3 {
   grid-column: 1 / -1;
+}
+
+.form-grid > h3.form-section {
+  margin: 6px 0 -4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.form-grid > h3.form-section:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.form-grid > .form-row-full {
+  grid-column: 1 / -1;
+}
+
+.form-help {
+  grid-column: 1 / -1;
+  margin-top: -6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.tag-list .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  background: rgba(15, 118, 110, 0.1);
+  color: #0f766e;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.range-with-value {
+  display: grid;
+  gap: 6px;
+}
+
+.range-with-value .range-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.range-with-value input[type="range"] {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.range-with-value .range-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  color: var(--text);
+  min-width: 56px;
+  text-align: right;
+}
+
+.time-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.time-pair input {
+  min-width: 0;
 }
 
 .search-form {

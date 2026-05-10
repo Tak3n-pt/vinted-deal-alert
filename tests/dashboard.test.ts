@@ -156,6 +156,50 @@ test("dashboard marks session cookies secure in production", async () => {
   }
 });
 
+test("dashboard refuses a search whose limit blows the per-scan budget", async () => {
+  const fixture = await dashboardFixture();
+  try {
+    const cookie = await loginCookie(fixture.origin);
+    // Lower the cap so we can exercise the budget gate without a giant search.
+    await fetch(`${fixture.origin}/api/settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ maxProductsPerScan: 50 })
+    });
+    // The fixture seeds 1 default search of 10 → adding 41 more would put us at 51, over the cap.
+    const response = await fetch(`${fixture.origin}/api/searches`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ query: "iphone 17 pro 256go", limit: 41, enabled: true })
+    });
+    assert.equal(response.status, 500); // dashboardServer wraps non-Http errors as 500
+    const text = await response.text();
+    assert.match(text, /Budget dépassé/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("dashboard pruneRetention caps deal_candidates and dashboard_logs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vinted-retention-"));
+  const databasePath = join(dir, "deals.sqlite");
+  const store = await DashboardStore.open(databasePath);
+  try {
+    for (let i = 0; i < 250; i += 1) await store.log("info", `event ${i}`);
+    const beforeLogs = await store.listLogs(300);
+    assert.equal(beforeLogs.length >= 250, true);
+
+    await store.pruneRetention({ dealCandidatesKeep: 100, logsKeep: 120, scanRunsKeep: 100 });
+
+    const afterLogs = await store.listLogs(300);
+    // pruneRetention enforces a minimum of 100; 120 means at most 120 rows remain.
+    assert.equal(afterLogs.length <= 120, true, `expected ≤120, got ${afterLogs.length}`);
+    assert.equal(afterLogs.length >= 100, true);
+  } finally {
+    await store.close();
+  }
+});
+
 test("dashboard rate limits repeated failed logins", async () => {
   const fixture = await dashboardFixture();
   try {

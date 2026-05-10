@@ -61,7 +61,6 @@ export class ApifyVintedProvider {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.providerTimeoutSeconds * 1000);
     const url = new URL(`https://api.apify.com/v2/acts/${encodeURIComponent(this.config.apifyActorId)}/run-sync-get-dataset-items`);
-    url.searchParams.set("token", this.config.apifyToken);
     url.searchParams.set("clean", "true");
     url.searchParams.set("format", "json");
 
@@ -69,7 +68,12 @@ export class ApifyVintedProvider {
     try {
       response = await fetch(url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        // Apify accepts the token via Authorization header. Sending it in the
+        // URL leaks it in proxy/CDN access logs.
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.config.apifyToken}`
+        },
         body: JSON.stringify(toApifyInput(search)),
         signal: controller.signal
       });
@@ -175,7 +179,7 @@ export function normalizeListing(raw: RawListing): Listing | null {
   if (itemCountry) listing.itemCountry = itemCountry;
   const itemLocation = stringValue(raw.itemLocation) || stringValue(raw.location) || locationValue(raw.city, raw.country_title ?? raw.country);
   if (itemLocation) listing.itemLocation = itemLocation;
-  const sellerRating = numberValue(raw.sellerRating ?? raw.user?.feedback_reputation);
+  const sellerRating = normalizeSellerRating(numberValue(raw.sellerRating ?? raw.user?.feedback_reputation));
   if (sellerRating !== undefined) listing.sellerRating = sellerRating;
   if (sellerReviews !== undefined) listing.sellerReviews = sellerReviews;
   const sellerItemCount = numberValue(raw.user?.item_count);
@@ -230,6 +234,21 @@ function numberValue(value: unknown): number | undefined {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+}
+
+/**
+ * Vinted's `feedback_reputation` is sometimes a 0-1 ratio (proportion of
+ * positive feedback) and sometimes a 0-5 star value. Detect the ratio shape
+ * and rescale to the 5-star convention used everywhere else.
+ */
+export function normalizeSellerRating(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  if (value > 5) return 5;
+  if (value > 1) return value;
+  // value is in [0, 1] — assume ratio when strictly between 0 and 1, leave 0 alone
+  if (value === 0) return 0;
+  return Math.round(value * 5 * 10) / 10;
 }
 
 function countryValue(value: unknown): string {

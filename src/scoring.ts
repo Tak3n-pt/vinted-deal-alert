@@ -34,6 +34,10 @@ export interface RiskRules {
   minSellerRating: number;
   minBatteryHealth: number;
   allowedCountries: string[];
+  /** User-managed substrings that, when present in title or description, raise a custom risk. */
+  customExcludeKeywords: string[];
+  /** Severity for the custom-keyword risk. Defaults to "reject". */
+  customExcludeSeverity: "reject" | "high" | "medium";
 }
 
 export interface ScoringOptions {
@@ -180,8 +184,19 @@ export function resolveBenchmark(match: PhoneMatch, key: string, history: Histor
 }
 
 export function effectivePrice(listing: Listing): number {
-  if (listing.totalPrice !== undefined && listing.totalPrice > listing.price) return listing.totalPrice;
-  return Math.round((listing.price * 1.05 + 4) * 100) / 100;
+  // Prefer the provider's totalPrice when it actually adds something — some
+  // providers echo the item price as totalPrice with no fees included.
+  if (listing.totalPrice !== undefined && listing.totalPrice > listing.price + 0.5) {
+    return listing.totalPrice;
+  }
+  // Vinted FR buyer-protection (article 2025) is roughly 5% of the item price
+  // with a 0.70 € floor, plus the cheapest available shipping (Mondial Relay
+  // ~3.79 € for a phone-sized parcel; Colissimo costs more). 4.99 € is a
+  // conservative blended estimate that matches the previous 1.05*p+4 formula
+  // for prices around 20-30 €.
+  const protection = Math.max(0.7, listing.price * 0.05);
+  const shipping = 4.99;
+  return Math.round((listing.price + protection + shipping) * 100) / 100;
 }
 
 function fallbackPrice(match: PhoneMatch): number | undefined {
@@ -213,13 +228,27 @@ function defaultStorage(match: PhoneMatch): number {
 function storageAdjustment(fromStorage: number, toStorage: number, match: PhoneMatch): number {
   if (fromStorage === toStorage) return 0;
 
-  const ordered = [64, 128, 256, 512, 1024];
+  const ordered = [64, 128, 256, 512, 1024, 2048];
   const fromIndex = ordered.indexOf(fromStorage);
   const toIndex = ordered.indexOf(toStorage);
   if (fromIndex === -1 || toIndex === -1) return 0;
 
-  const stepValue = match.brand === "apple" ? 85 : match.brand === "google" ? 70 : 65;
-  return (toIndex - fromIndex) * stepValue;
+  // Per-doubling step value calibrated to the FR refurbished market (mid-2025
+  // observations). Apple commands a clear premium, Pro Max more than Pro.
+  const step = perDoublingStep(match);
+  return (toIndex - fromIndex) * step;
+}
+
+function perDoublingStep(match: PhoneMatch): number {
+  if (match.brand === "apple") {
+    return match.tier === "pro-max" ? 110 : 95;
+  }
+  if (match.brand === "google") {
+    return match.tier === "fold" ? 90 : 70;
+  }
+  // samsung
+  if (match.tier === "ultra" || match.tier === "fold") return 80;
+  return 65;
 }
 
 function modelPriceRisks(finalPrice: number, match: PhoneMatch): RiskSignal[] {
@@ -395,6 +424,24 @@ function dashboardRiskSignals(listing: Listing, rules: RiskRules | undefined): R
       label: "facture absente bloquée par le dashboard",
       severity: "high"
     });
+  }
+
+  // User-managed custom exclude keywords. Case-insensitive substring match
+  // against title + description + condition. Each match becomes a single
+  // signal — multiple keywords matching produce one risk with the joined
+  // labels, which the dashboard surface in the candidate's risk list.
+  if (rules.customExcludeKeywords.length > 0) {
+    const haystack = text.toLowerCase();
+    const hits = rules.customExcludeKeywords
+      .map((keyword) => keyword.trim())
+      .filter((keyword) => keyword.length > 0 && haystack.includes(keyword.toLowerCase()));
+    if (hits.length > 0) {
+      signals.push({
+        code: "dashboard-custom-keyword-exclude",
+        label: `mots-clés exclus : ${hits.join(", ")}`,
+        severity: rules.customExcludeSeverity
+      });
+    }
   }
 
   return signals;

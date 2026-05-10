@@ -6,6 +6,7 @@ import { DiscordWebhook } from "./discord.js";
 import { scoreListings } from "./scoring.js";
 import type { Listing, ScoredDeal } from "./types.js";
 import type { ScoringOptions } from "./scoring.js";
+import type { AlertDeliveryOptions } from "./dashboardTypes.js";
 import type { DashboardStore } from "./dashboardStore.js";
 
 async function main(): Promise<void> {
@@ -61,16 +62,21 @@ export async function runScan({
   discord,
   searches,
   scoringOptions,
+  delivery,
   scanRunId,
-  dashboardStore
+  dashboardStore,
+  now = () => new Date()
 }: {
   provider: Pick<ListingProvider, "search">;
-  store: Pick<DealStoreApi, "recentHistory" | "saveObserved" | "reserveAlert" | "recordAlert" | "releaseAlert">;
+  store: Pick<DealStoreApi, "recentHistory" | "saveObserved" | "reserveAlert" | "recordAlert" | "releaseAlert" | "alertsInLast24h">;
   discord: Pick<DiscordWebhook, "sendDeal">;
   searches: Parameters<ListingProvider["search"]>[0][];
   scoringOptions?: ScoringOptions;
+  delivery?: AlertDeliveryOptions;
   scanRunId?: number;
-  dashboardStore?: Pick<DashboardStore, "recordDealCandidates">;
+  dashboardStore?: Pick<DashboardStore, "recordDealCandidates" | "log">;
+  /** Injectable clock for testing quiet-hours logic. */
+  now?: () => Date;
 }): Promise<{ listings: number; scored: number; alertable: number; sent: number; bestCandidate: string }> {
   const allListings: Listing[] = [];
 
@@ -89,10 +95,28 @@ export async function runScan({
     }
   }
 
+  const dropPercent = delivery?.reAlertDropPercent;
+  const maxPerScan = delivery?.maxAlertsPerScan ?? 0;
+  const maxPerDay = delivery?.maxAlertsPerDay ?? 0;
+  const inQuietHours = isInQuietHours(delivery, now());
+  const startingDailyAlerts = maxPerDay > 0 ? await store.alertsInLast24h() : 0;
   let sentAlerts = 0;
   const sentListingIds = new Set<string>();
+
   for (const deal of scored.filter((item) => item.shouldAlert)) {
-    if (!(await store.reserveAlert(deal))) continue;
+    if (maxPerScan > 0 && sentAlerts >= maxPerScan) {
+      await dashboardStore?.log("warn", `Plafond par scan atteint (${maxPerScan}). Alertes restantes différées.`);
+      break;
+    }
+    if (maxPerDay > 0 && startingDailyAlerts + sentAlerts >= maxPerDay) {
+      await dashboardStore?.log("warn", `Plafond journalier atteint (${maxPerDay}). Alertes restantes différées.`);
+      break;
+    }
+    if (inQuietHours) {
+      await dashboardStore?.log("info", `Heures calmes : alerte ${deal.match.model} reportée. Visible dans le tableau.`);
+      continue;
+    }
+    if (!(await store.reserveAlert(deal, dropPercent))) continue;
 
     try {
       await discord.sendDeal(deal);
@@ -111,6 +135,30 @@ export async function runScan({
   await dashboardStore?.recordDealCandidates(scanRunId, scored, sentListingIds);
   console.log(`[scan] annonces=${uniqueListings.length} scorées=${scored.length} alertables=${alertable} envoyées=${sentAlerts} meilleur=${bestCandidate}`);
   return { listings: uniqueListings.length, scored: scored.length, alertable, sent: sentAlerts, bestCandidate };
+}
+
+/**
+ * Returns true if `clock` is inside the quiet-hours window.
+ * Window can wrap past midnight: start=23:00 end=08:00 covers 23:00–07:59.
+ * Equal start/end means "always quiet" — flagged but harmless because the
+ * dashboard exposes an explicit enabled flag.
+ */
+export function isInQuietHours(delivery: AlertDeliveryOptions | undefined, clock: Date): boolean {
+  if (!delivery?.quietHoursEnabled) return false;
+  const startMin = parseHHMM(delivery.quietHoursStart);
+  const endMin = parseHHMM(delivery.quietHoursEnd);
+  if (startMin === null || endMin === null) return false;
+  const nowMin = clock.getHours() * 60 + clock.getMinutes();
+  if (startMin === endMin) return true;
+  if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
+  // Wraps past midnight.
+  return nowMin >= startMin || nowMin < endMin;
+}
+
+function parseHHMM(value: string): number | null {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  if (!match || !match[1] || !match[2]) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
 }
 
 function dedupeById(listings: Listing[]): Listing[] {

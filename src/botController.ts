@@ -15,13 +15,17 @@ export interface BotStatus {
   bestCandidate?: DealCandidateRecord;
 }
 
+const RETENTION_DEAL_CANDIDATES_DEFAULT = 5000;
+const RETENTION_LOGS_DEFAULT = 2000;
+const RETENTION_SCAN_RUNS_DEFAULT = 1000;
+
 export class BotController {
   private paused = false;
   private scanInFlight = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private nextScanAt: Date | undefined;
   private started = false;
-  private scanCount = 0;
+  private scheduledScanCount = 0;
 
   constructor(
     private readonly baseConfig: RuntimeConfig,
@@ -105,16 +109,24 @@ export class BotController {
         discord,
         searches: snapshot.searches,
         scoringOptions: snapshot.scoringOptions,
+        delivery: snapshot.delivery,
         scanRunId: runId,
         dashboardStore: this.dashboardStore
       });
-      this.scanCount += 1;
       await this.dashboardStore.completeScanRun(runId, "success", result);
 
-      if (snapshot.config.heartbeatEveryScans > 0 && this.scanCount % snapshot.config.heartbeatEveryScans === 0) {
-        await discord.sendStatus(
-          `Le bot Vinted fonctionne. Dernier scan : ${result.listings} annonces, ${result.alertable} alertables, ${result.sent} envoyées. Meilleur candidat : ${result.bestCandidate}.`
-        );
+      // Heartbeat counts scheduled scans only — manual / dashboard-triggered
+      // scans shouldn't trigger Discord status spam.
+      if (source === "scheduled") {
+        this.scheduledScanCount += 1;
+        if (
+          snapshot.config.heartbeatEveryScans > 0 &&
+          this.scheduledScanCount % snapshot.config.heartbeatEveryScans === 0
+        ) {
+          await discord.sendStatus(
+            `Le bot Vinted fonctionne. Dernier scan : ${result.listings} annonces, ${result.alertable} alertables, ${result.sent} envoyées. Meilleur candidat : ${result.bestCandidate}.`
+          );
+        }
       }
     } catch (error) {
       await this.dashboardStore.completeScanRun(
@@ -126,6 +138,16 @@ export class BotController {
       throw error;
     } finally {
       this.scanInFlight = false;
+      // Best-effort retention prune after every scan, regardless of outcome.
+      try {
+        await this.dashboardStore.pruneRetention({
+          dealCandidatesKeep: RETENTION_DEAL_CANDIDATES_DEFAULT,
+          logsKeep: RETENTION_LOGS_DEFAULT,
+          scanRunsKeep: RETENTION_SCAN_RUNS_DEFAULT
+        });
+      } catch (pruneError) {
+        console.error(`[retention] ${messageFromError(pruneError)}`);
+      }
     }
   }
 

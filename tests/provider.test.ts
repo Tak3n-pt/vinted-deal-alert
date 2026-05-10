@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ApifyVintedProvider, AuthorizedListingProvider, extractRawListings, normalizeListing, toApifyInput } from "../src/provider.js";
+import { ApifyVintedProvider, AuthorizedListingProvider, extractRawListings, normalizeListing, normalizeSellerRating, toApifyInput } from "../src/provider.js";
 import type { RuntimeConfig } from "../src/types.js";
 
 test("extracts items from common provider shapes", () => {
@@ -100,6 +100,45 @@ test("builds Apify actor input from a filtered Vinted URL", () => {
     maxProducts: 10,
     startUrls: [{ url: "https://www.vinted.fr/catalog?search_text=iphone%2015%20pro%20256go&order=newest_first" }]
   });
+});
+
+test("normalizeSellerRating rescales 0-1 ratios, leaves 0-5 stars alone", () => {
+  // 0-5 star inputs pass through.
+  assert.equal(normalizeSellerRating(4.9), 4.9);
+  assert.equal(normalizeSellerRating(5), 5);
+  // 0 stays 0 (no feedback yet).
+  assert.equal(normalizeSellerRating(0), 0);
+  // 0-1 ratio is rescaled to a 0-5 star equivalent.
+  assert.equal(normalizeSellerRating(0.95), 4.8);
+  assert.equal(normalizeSellerRating(0.5), 2.5);
+  // Garbage is dropped.
+  assert.equal(normalizeSellerRating(undefined), undefined);
+  assert.equal(normalizeSellerRating(-1), undefined);
+  assert.equal(normalizeSellerRating(99), 5);
+});
+
+test("ApifyVintedProvider sends the token via Authorization header, not URL", async () => {
+  const originalFetch = globalThis.fetch;
+  let observedUrl = "";
+  let observedAuth: string | null = null;
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    observedUrl = typeof url === "string" ? url : (url as URL).toString();
+    const headers = init?.headers as Record<string, string> | undefined;
+    observedAuth = headers?.authorization ?? headers?.Authorization ?? null;
+    return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+
+  try {
+    const provider = new ApifyVintedProvider(config({
+      providerType: "apify",
+      apifyToken: "test-token-do-not-leak"
+    }));
+    await provider.search({ market: "FR", query: "iphone 15 pro", limit: 1, sort: "newest" });
+    assert.equal(observedUrl.includes("token=test-token-do-not-leak"), false);
+    assert.equal(observedAuth, "Bearer test-token-do-not-leak");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("times out hung provider requests", async () => {

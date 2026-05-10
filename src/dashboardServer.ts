@@ -35,13 +35,26 @@ export interface DashboardControllerApi {
 export function createDashboardHandler(options: DashboardHandlerOptions): (req: IncomingMessage, res: ServerResponse) => void {
   const staticDir = resolve(options.staticDir);
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+  const writeAttempts = new Map<string, { count: number; resetAt: number }>();
 
   return (req, res) => {
-    handleRequest(req, res, options, staticDir, loginAttempts).catch((error) => {
+    applySecurityHeaders(res);
+    handleRequest(req, res, options, staticDir, loginAttempts, writeAttempts).catch((error) => {
       const status = error instanceof HttpError ? error.status : 500;
       sendJson(res, status, { error: messageFromError(error) });
     });
   };
+}
+
+function applySecurityHeaders(res: ServerResponse): void {
+  res.setHeader("x-content-type-options", "nosniff");
+  res.setHeader("x-frame-options", "DENY");
+  res.setHeader("referrer-policy", "no-referrer");
+  res.setHeader("permissions-policy", "geolocation=(), microphone=(), camera=()");
+  res.setHeader(
+    "content-security-policy",
+    "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
+  );
 }
 
 export async function startDashboardServer(port = Number(process.env.PORT ?? process.env.DASHBOARD_PORT ?? 3000)): Promise<Server> {
@@ -53,9 +66,20 @@ export async function startDashboardServer(port = Number(process.env.PORT ?? pro
   const controller = new BotController(baseConfig, fallbackSearches, dealStore, dashboardStore);
   await controller.start();
 
-  const adminPassword = process.env.DASHBOARD_ADMIN_PASSWORD ?? process.env.ADMIN_PASSWORD ?? "admin";
-  if (adminPassword === "admin") {
-    console.warn("[dashboard] Mot de passe admin par défaut utilisé : admin. Définir DASHBOARD_ADMIN_PASSWORD avant tout déploiement.");
+  const adminPassword = process.env.DASHBOARD_ADMIN_PASSWORD ?? process.env.ADMIN_PASSWORD ?? "";
+  const isProduction = process.env.NODE_ENV === "production";
+  if (!adminPassword) {
+    if (isProduction) {
+      throw new Error("DASHBOARD_ADMIN_PASSWORD est requis en production. Définir une valeur forte avant le démarrage.");
+    }
+    console.warn("[dashboard] Aucun DASHBOARD_ADMIN_PASSWORD défini. Mot de passe 'admin' utilisé pour le dev local uniquement.");
+  } else if (adminPassword === "admin") {
+    if (isProduction) {
+      throw new Error("DASHBOARD_ADMIN_PASSWORD=admin est interdit en production. Choisir un mot de passe fort.");
+    }
+    console.warn("[dashboard] Mot de passe admin trivial 'admin' détecté. Réservé au dev local.");
+  } else if (adminPassword.length < 12) {
+    console.warn("[dashboard] DASHBOARD_ADMIN_PASSWORD plus court que 12 caractères. Préférer une phrase de passe plus longue.");
   }
 
   const handler = createDashboardHandler({
@@ -63,15 +87,21 @@ export async function startDashboardServer(port = Number(process.env.PORT ?? pro
     fallbackSearches,
     dashboardStore,
     controller,
-    adminPassword,
+    adminPassword: adminPassword || "admin",
     staticDir: resolve("dist/dashboard")
   });
 
+  // Default to loopback so the dashboard isn't exposed on every interface.
+  // Operators must opt in via DASHBOARD_HOST=0.0.0.0 (or a specific IP) to
+  // expose the port; production deployments are expected to terminate at a
+  // reverse proxy / Cloudflare Access in front.
+  const host = process.env.DASHBOARD_HOST ?? (isProduction ? "0.0.0.0" : "127.0.0.1");
+
   const server = createServer(handler);
   await new Promise<void>((resolveListen) => {
-    server.listen(port, () => resolveListen());
+    server.listen(port, host, () => resolveListen());
   });
-  console.log(`[dashboard] http://localhost:${port}`);
+  console.log(`[dashboard] http://${host === "0.0.0.0" ? "localhost" : host}:${port}`);
   return server;
 }
 
@@ -80,11 +110,12 @@ async function handleRequest(
   res: ServerResponse,
   options: DashboardHandlerOptions,
   staticDir: string,
-  loginAttempts: Map<string, { count: number; resetAt: number }>
+  loginAttempts: Map<string, { count: number; resetAt: number }>,
+  writeAttempts: Map<string, { count: number; resetAt: number }>
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (url.pathname.startsWith("/api/")) {
-    await handleApi(req, res, url, options, loginAttempts);
+    await handleApi(req, res, url, options, loginAttempts, writeAttempts);
     return;
   }
 
@@ -97,7 +128,8 @@ async function handleApi(
   res: ServerResponse,
   url: URL,
   { baseConfig, fallbackSearches, dashboardStore, controller, adminPassword }: DashboardHandlerOptions,
-  loginAttempts: Map<string, { count: number; resetAt: number }>
+  loginAttempts: Map<string, { count: number; resetAt: number }>,
+  writeAttempts: Map<string, { count: number; resetAt: number }>
 ): Promise<void> {
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
     const loginKey = clientKey(req);
@@ -123,6 +155,15 @@ async function handleApi(
   const token = sessionToken(req);
   if (!token || !(await dashboardStore.validateSession(hashToken(token)))) {
     throw new HttpError(401, "Authentification requise");
+  }
+
+  // Per-session write rate-limit. We key on the session token so an attacker
+  // can't drain the limiter for a legit admin from the same NAT or by spoofing
+  // x-forwarded-for. Login is excluded (it has its own limiter); reads are
+  // unrestricted.
+  const isMutation = req.method === "POST" || req.method === "PUT" || req.method === "DELETE" || req.method === "PATCH";
+  if (isMutation && recordWriteAttempt(writeAttempts, hashToken(token))) {
+    throw new HttpError(429, "Trop de modifications consécutives. Réessayer dans quelques secondes.");
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
@@ -176,7 +217,7 @@ async function handleApi(
       return;
     }
     if (req.method === "POST") {
-      sendJson(res, 201, { search: await dashboardStore.createSearch(await readJson(req)) });
+      sendJson(res, 201, { search: await dashboardStore.createSearch(await readJson(req), baseConfig.maxProductsPerScan) });
       return;
     }
   }
@@ -184,7 +225,7 @@ async function handleApi(
   const searchId = routeId(url.pathname, "/api/searches/");
   if (searchId !== undefined) {
     if (req.method === "PUT") {
-      sendJson(res, 200, { search: await dashboardStore.updateSearch(searchId, await readJson(req)) });
+      sendJson(res, 200, { search: await dashboardStore.updateSearch(searchId, await readJson(req), baseConfig.maxProductsPerScan) });
       return;
     }
     if (req.method === "DELETE") {
@@ -335,6 +376,21 @@ function recordFailedLogin(attempts: Map<string, { count: number; resetAt: numbe
   }
   current.count += 1;
   attempts.set(key, current);
+}
+
+const WRITE_WINDOW_MS = 10 * 1000;
+const WRITE_MAX_PER_WINDOW = 30;
+
+function recordWriteAttempt(attempts: Map<string, { count: number; resetAt: number }>, key: string): boolean {
+  const now = Date.now();
+  const current = attempts.get(key);
+  if (!current || current.resetAt <= now) {
+    attempts.set(key, { count: 1, resetAt: now + WRITE_WINDOW_MS });
+    return false;
+  }
+  current.count += 1;
+  attempts.set(key, current);
+  return current.count > WRITE_MAX_PER_WINDOW;
 }
 
 function routeId(pathname: string, prefix: string): number | undefined {

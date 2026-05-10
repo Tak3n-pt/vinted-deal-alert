@@ -16,6 +16,7 @@ export interface SqlDatabase {
   get(sql: string, params?: unknown[]): Promise<Record<string, unknown> | undefined>;
   all(sql: string, params?: unknown[]): Promise<Array<Record<string, unknown>>>;
   insert(sql: string, params?: unknown[], idColumn?: string): Promise<number>;
+  transaction(run: () => Promise<void>): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -42,6 +43,10 @@ async function openSqliteDatabase(databasePath: string): Promise<SqlDatabase> {
     DatabaseSync: new (path: string) => SqliteDatabaseSync;
   };
   const db = new sqlite.DatabaseSync(fullPath);
+  // WAL lets the dashboard read while the bot writes; busy_timeout avoids
+  // SQLITE_BUSY when both processes (or the dashboard + bot in the same
+  // process) hit the file at the same time.
+  db.exec("pragma journal_mode = WAL; pragma synchronous = NORMAL; pragma busy_timeout = 5000; pragma foreign_keys = ON;");
   return {
     dialect: "sqlite",
     exec: async (sql) => {
@@ -53,6 +58,16 @@ async function openSqliteDatabase(databasePath: string): Promise<SqlDatabase> {
     insert: async (sql, params = []) => {
       const result = db.prepare(sql).run(...params);
       return Number(result.lastInsertRowid ?? 0);
+    },
+    transaction: async (run) => {
+      db.exec("begin immediate");
+      try {
+        await run();
+        db.exec("commit");
+      } catch (error) {
+        try { db.exec("rollback"); } catch { /* ignore rollback errors */ }
+        throw error;
+      }
     },
     close: async () => {
       db.close();
@@ -86,6 +101,13 @@ async function openPostgresDatabase(databaseUrl: string): Promise<SqlDatabase> {
       const result = await pool.query(`${convertPlaceholders(sql)} returning ${idColumn}`, params);
       const value = result.rows[0]?.[idColumn];
       return Number(value ?? 0);
+    },
+    transaction: async (run) => {
+      // Wrapping pool-based queries in a transaction would require routing every
+      // statement through a dedicated client. Until the rest of the API supports
+      // that, callers fall back to autocommit for the postgres dialect — the
+      // transaction wrapper is primarily a sqlite write-batching speed-up.
+      await run();
     },
     close: async () => {
       await pool.end();

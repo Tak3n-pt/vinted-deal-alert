@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveBenchmark, scoreListing, scoreListings } from "../src/scoring.js";
+import { effectivePrice, resolveBenchmark, scoreListing, scoreListings } from "../src/scoring.js";
 import { benchmarkKey } from "../src/phoneMatcher.js";
 import type { Listing, PhoneMatch } from "../src/types.js";
 
@@ -188,7 +188,8 @@ test("does not alert on absolute savings alone when score and discount are weak"
     imageUrl: "https://example.test/image.jpg"
   }), []);
 
-  assert.equal(Math.round(deal?.savings ?? 0), 88);
+  // Vinted FR final price ≈ 760 + max(0.7, 5%) + 4.99 = 802.99 → savings ≈ 87.
+  assert.equal(Math.round(deal?.savings ?? 0), 87);
   assert.equal(deal?.shouldAlert, false);
 });
 
@@ -267,6 +268,100 @@ test("allows balanced cosmetic issue only when discount is strong", () => {
   assert.equal(deal?.shouldAlert, true);
 });
 
+test("effectivePrice applies Vinted FR protection floor and shipping estimate", () => {
+  const cheap = effectivePrice(makeListing({ price: 5 }));
+  // 5 + max(0.7, 0.25) + 4.99 = 10.69
+  assert.equal(cheap, 10.69);
+
+  const mid = effectivePrice(makeListing({ price: 200 }));
+  // 200 + max(0.7, 10) + 4.99 = 214.99
+  assert.equal(mid, 214.99);
+
+  const heavy = effectivePrice(makeListing({ price: 1000 }));
+  // 1000 + 50 + 4.99 = 1054.99
+  assert.equal(heavy, 1054.99);
+});
+
+test("effectivePrice ignores totalPrice that doesn't add real fees", () => {
+  // Some providers echo the item price as totalPrice with no fees included;
+  // fall back to estimation in that case.
+  const bare = effectivePrice(makeListing({ price: 200, totalPrice: 200 }));
+  assert.equal(bare, 214.99);
+
+  const useful = effectivePrice(makeListing({ price: 200, totalPrice: 230 }));
+  assert.equal(useful, 230);
+});
+
+test("custom exclude keywords reject matching listings", () => {
+  const deal = scoreListing(
+    listing({
+      title: "iPhone 15 Pro Max 256Go RECONDITIONNÉ",
+      price: 650,
+      description: "Tres bon etat, facture, debloque tout operateur",
+      sellerRating: 4.9,
+      sellerReviews: 55,
+      imageUrl: "https://example.test/image.jpg"
+    }),
+    [],
+    [],
+    {
+      riskRules: {
+        rejectHighRisks: true,
+        allowMissingImage: false,
+        rejectNonOriginalScreen: true,
+        rejectScreenReplaced: false,
+        rejectMissingInvoice: false,
+        minSellerReviews: 0,
+        minSellerRating: 0,
+        minBatteryHealth: 80,
+        allowedCountries: [],
+        customExcludeKeywords: ["reconditionne", "reconditionné"],
+        customExcludeSeverity: "reject"
+      }
+    }
+  );
+
+  assert.equal(deal?.shouldAlert, false);
+  assert.equal(
+    deal?.risks.some((risk) => risk.code === "dashboard-custom-keyword-exclude" && risk.severity === "reject"),
+    true
+  );
+});
+
+test("custom exclude keywords are case-insensitive substring matches", () => {
+  const deal = scoreListing(
+    listing({
+      title: "iPhone 15 Pro Max 256Go vente urgente",
+      price: 650,
+      description: "Tres bon etat, facture, debloque tout operateur",
+      sellerRating: 4.9,
+      sellerReviews: 55,
+      imageUrl: "https://example.test/image.jpg"
+    }),
+    [],
+    [],
+    {
+      riskRules: {
+        rejectHighRisks: true,
+        allowMissingImage: false,
+        rejectNonOriginalScreen: true,
+        rejectScreenReplaced: false,
+        rejectMissingInvoice: false,
+        minSellerReviews: 0,
+        minSellerRating: 0,
+        minBatteryHealth: 80,
+        allowedCountries: [],
+        customExcludeKeywords: ["URGENTE"],
+        customExcludeSeverity: "high"
+      }
+    }
+  );
+
+  assert.equal(deal?.shouldAlert, false);
+  const hit = deal?.risks.find((risk) => risk.code === "dashboard-custom-keyword-exclude");
+  assert.equal(hit?.severity, "high");
+});
+
 test("dashboard model rule blocks disabled models", () => {
   const deal = scoreListing(listing({
     title: "iPhone 15 Pro Max 256Go",
@@ -307,6 +402,20 @@ test("dashboard max final price blocks expensive alerts", () => {
   assert.equal(deal?.shouldAlert, false);
   assert.equal(deal?.rejectionReasons.some((reason) => reason.includes("supérieur au maximum dashboard")), true);
 });
+
+function makeListing(input: Partial<Listing> & { price: number }): Listing {
+  const item: Listing = {
+    id: input.id ?? "id",
+    title: input.title ?? "iPhone 15 Pro Max 256Go",
+    description: input.description ?? "",
+    price: input.price,
+    currency: "EUR",
+    url: "https://example.test",
+    raw: {}
+  };
+  if (input.totalPrice !== undefined) item.totalPrice = input.totalPrice;
+  return item;
+}
 
 function listing(input: Partial<Listing>): Listing {
   const item: Listing = {

@@ -8,10 +8,11 @@ import { openSqlDatabase, type SqlDatabase } from "./sqlDatabase.js";
 export interface DealStoreApi {
   saveObserved(listing: Listing, match: PhoneMatch): Promise<void>;
   recentHistory(days?: number): Promise<HistoricalListing[]>;
-  shouldSendAlert(deal: ScoredDeal): Promise<boolean>;
-  reserveAlert(deal: ScoredDeal): Promise<boolean>;
+  shouldSendAlert(deal: ScoredDeal, dropPercent?: number): Promise<boolean>;
+  reserveAlert(deal: ScoredDeal, dropPercent?: number): Promise<boolean>;
   recordAlert(deal: ScoredDeal): Promise<void>;
   releaseAlert(deal: ScoredDeal): Promise<void>;
+  alertsInLast24h(): Promise<number>;
 }
 
 export class DealStore implements DealStoreApi {
@@ -70,18 +71,22 @@ export class DealStore implements DealStoreApi {
     });
   }
 
-  async shouldSendAlert(deal: ScoredDeal): Promise<boolean> {
+  async shouldSendAlert(deal: ScoredDeal, dropPercent = 0.10): Promise<boolean> {
     const previous = await this.db.get("select price from sent_alerts where listing_id = ?", [deal.listing.id]);
     if (!previous) return true;
     const previousPrice = Number(previous.price);
-    return Number.isFinite(previousPrice) && deal.finalPrice <= previousPrice * 0.9;
+    if (!Number.isFinite(previousPrice)) return true;
+    const ratio = clampDropRatio(dropPercent);
+    return deal.finalPrice <= previousPrice * (1 - ratio);
   }
 
-  async reserveAlert(deal: ScoredDeal): Promise<boolean> {
+  async reserveAlert(deal: ScoredDeal, dropPercent = 0.10): Promise<boolean> {
     const staleReservedExpression =
       this.db.dialect === "postgres"
         ? "sent_alerts.reserved_at <= CURRENT_TIMESTAMP - interval '15 minutes'"
         : "sent_alerts.reserved_at <= datetime('now', '-15 minutes')";
+    const ratio = clampDropRatio(dropPercent);
+    const keepFactor = 1 - ratio;
     const result = await this.db.run(
       `insert into sent_alerts
         (listing_id, price, score, url, status, reserved_at, sent_at)
@@ -94,15 +99,24 @@ export class DealStore implements DealStoreApi {
          reserved_at = CURRENT_TIMESTAMP,
          sent_at = CURRENT_TIMESTAMP
        where
-         excluded.price <= sent_alerts.price * 0.9
+         excluded.price <= sent_alerts.price * ?
          or (
            sent_alerts.status = 'reserved'
            and ${staleReservedExpression}
          )`,
-      [deal.listing.id, deal.finalPrice, deal.score, deal.listing.url]
+      [deal.listing.id, deal.finalPrice, deal.score, deal.listing.url, keepFactor]
     );
 
     return result.changes > 0;
+  }
+
+  async alertsInLast24h(): Promise<number> {
+    const sql =
+      this.db.dialect === "postgres"
+        ? "select count(*) as count from sent_alerts where status = 'sent' and sent_at >= CURRENT_TIMESTAMP - interval '24 hours'"
+        : "select count(*) as count from sent_alerts where status = 'sent' and sent_at >= datetime('now', '-24 hours')";
+    const row = await this.db.get(sql);
+    return Number(row?.count ?? 0);
   }
 
   async recordAlert(deal: ScoredDeal): Promise<void> {
@@ -193,4 +207,9 @@ export class DealStore implements DealStoreApi {
     if (rows.some((row) => row.name === column)) return;
     await this.db.exec(`alter table ${table} add column ${column} ${definition}`);
   }
+}
+
+function clampDropRatio(value: number): number {
+  if (!Number.isFinite(value)) return 0.10;
+  return Math.min(0.95, Math.max(0.01, value));
 }

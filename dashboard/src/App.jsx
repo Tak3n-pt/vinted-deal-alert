@@ -301,6 +301,14 @@ function DashboardPage({ status, settings, searches, modelRules, deals, scans, l
           <span>Intervalle</span>
           <strong>{duration(settings?.pollIntervalSeconds ?? 0)}</strong>
         </div>
+        <div>
+          <span>Heures calmes</span>
+          <strong>{settings?.quietHoursEnabled ? `${settings.quietHoursStart}–${settings.quietHoursEnd}` : "Désactivées"}</strong>
+        </div>
+        <div>
+          <span>Plafond / 24 h</span>
+          <strong>{settings?.maxAlertsPerDay > 0 ? `${settings.maxAlertsPerDay} alertes` : "Sans limite"}</strong>
+        </div>
         <div className="toolbar-row">
           <button className="secondary" onClick={status?.paused ? onResume : onPause}>
             {status?.paused ? <Play size={18} /> : <Pause size={18} />}
@@ -445,19 +453,76 @@ function ModelRulesPage({ modelRules, setModelRules, runAction }) {
 }
 
 function RiskRulesPage({ riskRules, setRiskRules, runAction }) {
+  const keywords = riskRules.customExcludeKeywords ?? [];
+  const severity = riskRules.customExcludeSeverity ?? "reject";
+
+  function setKeywords(value) {
+    const tokens = value
+      .split(/[,\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    // Deduplicate while preserving the order the user typed.
+    const seen = new Set();
+    const unique = [];
+    for (const token of tokens) {
+      const lower = token.toLowerCase();
+      if (seen.has(lower)) continue;
+      seen.add(lower);
+      unique.push(token);
+    }
+    setRiskRules({ ...riskRules, customExcludeKeywords: unique.slice(0, 50) });
+  }
+
   return (
     <section className="panel form-grid risks">
       <PanelTitle icon={AlertTriangle} title="Filtres de risque" />
+
+      <h3 className="form-section"><Shield size={13} /> Catégories bloquantes</h3>
       <label className="checkbox"><input type="checkbox" checked={riskRules.rejectHighRisks} onChange={(event) => setRiskRules({ ...riskRules, rejectHighRisks: event.target.checked })} /> Bloquer les risques élevés</label>
       <label className="checkbox"><input type="checkbox" checked={riskRules.allowMissingImage} onChange={(event) => setRiskRules({ ...riskRules, allowMissingImage: event.target.checked })} /> Autoriser sans image</label>
       <label className="checkbox"><input type="checkbox" checked={riskRules.rejectNonOriginalScreen} onChange={(event) => setRiskRules({ ...riskRules, rejectNonOriginalScreen: event.target.checked })} /> Bloquer écran non original</label>
       <label className="checkbox"><input type="checkbox" checked={riskRules.rejectScreenReplaced} onChange={(event) => setRiskRules({ ...riskRules, rejectScreenReplaced: event.target.checked })} /> Bloquer écran remplacé</label>
       <label className="checkbox"><input type="checkbox" checked={riskRules.rejectMissingInvoice} onChange={(event) => setRiskRules({ ...riskRules, rejectMissingInvoice: event.target.checked })} /> Bloquer sans facture</label>
+
+      <h3 className="form-section"><Smartphone size={13} /> Vendeur et appareil</h3>
       <label>Avis vendeur minimum<input type="number" min="0" value={riskRules.minSellerReviews} onChange={(event) => setRiskRules({ ...riskRules, minSellerReviews: numberValue(event.target.value) })} /></label>
       <label>Note vendeur minimum<input type="number" min="0" max="5" step="0.1" value={riskRules.minSellerRating} onChange={(event) => setRiskRules({ ...riskRules, minSellerRating: numberValue(event.target.value) })} /></label>
       <label>Batterie minimum (%)<input type="number" min="0" max="100" value={riskRules.minBatteryHealth} onChange={(event) => setRiskRules({ ...riskRules, minBatteryHealth: numberValue(event.target.value) })} /></label>
-      <label>Pays acceptés<input value={(riskRules.allowedCountries ?? []).join(", ")} onChange={(event) => setRiskRules({ ...riskRules, allowedCountries: event.target.value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) })} /></label>
-      <div className="form-actions">
+      <label>Pays acceptés<input value={(riskRules.allowedCountries ?? []).join(", ")} onChange={(event) => setRiskRules({ ...riskRules, allowedCountries: event.target.value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) })} placeholder="FR, BE, ES" /></label>
+
+      <h3 className="form-section"><ListFilter size={13} /> Mots-clés exclus</h3>
+      <label className="form-row-full">
+        Mots-clés à exclure (séparés par virgule)
+        <input
+          value={keywords.join(", ")}
+          onChange={(event) => setKeywords(event.target.value)}
+          placeholder="ex. reconditionne, refurbished, reservé"
+        />
+        {keywords.length > 0 ? (
+          <span className="tag-list">
+            {keywords.map((keyword) => (
+              <span className="tag" key={keyword}>{keyword}</span>
+            ))}
+          </span>
+        ) : null}
+      </label>
+      <label>
+        Sévérité
+        <select
+          value={severity}
+          onChange={(event) => setRiskRules({ ...riskRules, customExcludeSeverity: event.target.value })}
+        >
+          <option value="reject">Bloquante</option>
+          <option value="high">Élevée</option>
+          <option value="medium">Moyenne</option>
+        </select>
+      </label>
+      <p className="form-help">
+        Une correspondance dans le titre ou la description marque l&apos;annonce avec la sévérité choisie.
+        Sévérité « bloquante » empêche toute alerte ; « élevée » dépend de la case « Bloquer les risques élevés ».
+      </p>
+
+      <div className="form-actions form-row-full">
         <button className="primary" type="button" onClick={() => runAction("Risques sauvegardés", () => api("/api/risk-rules", { method: "PUT", body: riskRules }))}><Save size={18} /> Sauvegarder</button>
       </div>
     </section>
@@ -476,9 +541,15 @@ function SettingsPage({ settings, setSettings, runAction }) {
     setSecrets({ discordWebhookUrl: "", apifyToken: "", authorizedDataApiKey: "" });
   }
 
+  // Re-alert threshold is stored as a 0-1 fraction; the slider edits a 1-95 %
+  // integer to keep typing simple and align with the server's clamp range.
+  const reAlertPercent = Math.round((settings.reAlertDropPercent ?? 0.10) * 100);
+
   return (
     <section className="panel form-grid settings-form">
       <PanelTitle icon={Settings} title="Configuration serveur" />
+
+      <h3 className="form-section"><Database size={13} /> Source de données</h3>
       <label>Source de données
         <select value={settings.providerType} onChange={(event) => setSettings({ ...settings, providerType: event.target.value })}>
           <option value="apify">Apify</option>
@@ -487,19 +558,90 @@ function SettingsPage({ settings, setSettings, runAction }) {
       </label>
       <label>Acteur Apify<input value={settings.apifyActorId} onChange={(event) => setSettings({ ...settings, apifyActorId: event.target.value })} /></label>
       <label>URL API générique<input value={settings.authorizedDataApiUrl} onChange={(event) => setSettings({ ...settings, authorizedDataApiUrl: event.target.value })} /></label>
-      <label>Intervalle de scan<input type="number" value={settings.pollIntervalSeconds} onChange={(event) => setSettings({ ...settings, pollIntervalSeconds: numberValue(event.target.value) })} /></label>
-      <label>Délai source<input type="number" value={settings.providerTimeoutSeconds} onChange={(event) => setSettings({ ...settings, providerTimeoutSeconds: numberValue(event.target.value) })} /></label>
-      <label>Produits max<input type="number" value={settings.maxProductsPerScan} onChange={(event) => setSettings({ ...settings, maxProductsPerScan: numberValue(event.target.value) })} /></label>
-      <label>Message de suivi<input type="number" value={settings.heartbeatEveryScans} onChange={(event) => setSettings({ ...settings, heartbeatEveryScans: numberValue(event.target.value) })} /></label>
-      <label>Score minimum<input type="number" value={settings.minScore} onChange={(event) => setSettings({ ...settings, minScore: numberValue(event.target.value) })} /></label>
-      <label>Remise minimum<input type="number" step="0.01" value={settings.minDiscount} onChange={(event) => setSettings({ ...settings, minDiscount: numberValue(event.target.value) })} /></label>
-      <label>Économie minimum<input type="number" value={settings.minSavings} onChange={(event) => setSettings({ ...settings, minSavings: numberValue(event.target.value) })} /></label>
+
+      <h3 className="form-section"><Clock3 size={13} /> Cadence et limites</h3>
+      <label>Intervalle de scan (s)<input type="number" min="60" value={settings.pollIntervalSeconds} onChange={(event) => setSettings({ ...settings, pollIntervalSeconds: numberValue(event.target.value) })} /></label>
+      <label>Délai source (s)<input type="number" min="5" value={settings.providerTimeoutSeconds} onChange={(event) => setSettings({ ...settings, providerTimeoutSeconds: numberValue(event.target.value) })} /></label>
+      <label>Produits max / scan<input type="number" min="1" value={settings.maxProductsPerScan} onChange={(event) => setSettings({ ...settings, maxProductsPerScan: numberValue(event.target.value) })} /></label>
+      <label>Heartbeat tous les N scans<input type="number" min="0" value={settings.heartbeatEveryScans} onChange={(event) => setSettings({ ...settings, heartbeatEveryScans: numberValue(event.target.value) })} /></label>
+
+      <h3 className="form-section"><SlidersHorizontal size={13} /> Seuils d&apos;alerte</h3>
+      <label>Score minimum<input type="number" min="0" max="100" value={settings.minScore} onChange={(event) => setSettings({ ...settings, minScore: numberValue(event.target.value) })} /></label>
+      <label>Remise minimum (0-1)<input type="number" min="0" max="1" step="0.01" value={settings.minDiscount} onChange={(event) => setSettings({ ...settings, minDiscount: numberValue(event.target.value) })} /></label>
+      <label>Économie minimum (€)<input type="number" min="0" value={settings.minSavings} onChange={(event) => setSettings({ ...settings, minSavings: numberValue(event.target.value) })} /></label>
+      <label className="range-with-value">
+        Re-alerte après baisse de
+        <span className="range-row">
+          <input
+            type="range"
+            min="1"
+            max="50"
+            value={reAlertPercent}
+            onChange={(event) => setSettings({ ...settings, reAlertDropPercent: Math.min(0.95, Math.max(0.01, Number(event.target.value) / 100)) })}
+          />
+          <span className="range-value">{reAlertPercent}%</span>
+        </span>
+      </label>
+
+      <h3 className="form-section"><Bell size={13} /> Notifications et heures calmes</h3>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={Boolean(settings.quietHoursEnabled)}
+          onChange={(event) => setSettings({ ...settings, quietHoursEnabled: event.target.checked })}
+        />
+        Activer les heures calmes
+      </label>
+      <label>
+        Heures calmes (début / fin)
+        <span className="time-pair">
+          <input
+            type="time"
+            value={settings.quietHoursStart ?? "23:00"}
+            disabled={!settings.quietHoursEnabled}
+            onChange={(event) => setSettings({ ...settings, quietHoursStart: event.target.value })}
+          />
+          <input
+            type="time"
+            value={settings.quietHoursEnd ?? "08:00"}
+            disabled={!settings.quietHoursEnabled}
+            onChange={(event) => setSettings({ ...settings, quietHoursEnd: event.target.value })}
+          />
+        </span>
+      </label>
+      <label>
+        Plafond alertes / scan
+        <input
+          type="number"
+          min="0"
+          value={settings.maxAlertsPerScan ?? 0}
+          onChange={(event) => setSettings({ ...settings, maxAlertsPerScan: numberValue(event.target.value) })}
+        />
+      </label>
+      <label>
+        Plafond alertes / 24 h
+        <input
+          type="number"
+          min="0"
+          value={settings.maxAlertsPerDay ?? 0}
+          onChange={(event) => setSettings({ ...settings, maxAlertsPerDay: numberValue(event.target.value) })}
+        />
+      </label>
+      <p className="form-help">
+        Pendant les heures calmes les annonces restent enregistrées et visibles dans le tableau, mais aucun message Discord n&apos;est envoyé.
+        Les plafonds protègent contre les emballements (0 = sans limite). Le plafond /24 h est calculé sur les annonces uniques alertées.
+      </p>
+
+      <h3 className="form-section"><Bot size={13} /> Modes</h3>
       <label className="checkbox"><input type="checkbox" checked={settings.runOnStart} onChange={(event) => setSettings({ ...settings, runOnStart: event.target.checked })} /> Scan au démarrage</label>
       <label className="checkbox"><input type="checkbox" checked={settings.dryRun} onChange={(event) => setSettings({ ...settings, dryRun: event.target.checked })} /> Mode simulation</label>
+
+      <h3 className="form-section"><LockKeyhole size={13} /> Secrets (écriture seule)</h3>
       <label>Webhook Discord <SecretState configured={settings.discordWebhookConfigured} /><input value={secrets.discordWebhookUrl} onChange={(event) => setSecrets({ ...secrets, discordWebhookUrl: event.target.value })} placeholder="remplacement uniquement" /></label>
       <label>Token Apify <SecretState configured={settings.apifyTokenConfigured} /><input value={secrets.apifyToken} onChange={(event) => setSecrets({ ...secrets, apifyToken: event.target.value })} placeholder="remplacement uniquement" /></label>
       <label>Clé API générique <SecretState configured={settings.authorizedDataApiKeyConfigured} /><input value={secrets.authorizedDataApiKey} onChange={(event) => setSecrets({ ...secrets, authorizedDataApiKey: event.target.value })} placeholder="remplacement uniquement" /></label>
-      <div className="form-actions">
+
+      <div className="form-actions form-row-full">
         <button className="secondary" type="button" onClick={() => runAction("Défauts restaurés", () => api("/api/settings/restore-defaults", { method: "POST" }))}><RotateCcw size={18} /> Restaurer les défauts</button>
         <button className="primary" type="button" onClick={save}><Save size={18} /> Sauvegarder</button>
       </div>
@@ -706,7 +848,11 @@ function translateLog(message) {
     .replace("Bot resumed from dashboard", "Bot relancé depuis le dashboard")
     .replace("Discord test message sent", "Message de test Discord envoyé")
     .replace(/Scan success: (\d+) listings, (\d+) alerts sent/, "Scan réussi : $1 annonces, $2 alertes envoyées")
-    .replace(/Scan failed: (\d+) listings, (\d+) alerts sent/, "Scan échoué : $1 annonces, $2 alertes envoyées");
+    .replace(/Scan failed: (\d+) listings, (\d+) alerts sent/, "Scan échoué : $1 annonces, $2 alertes envoyées")
+    // Caps & quiet hours messages emitted by runScan / botController.
+    .replace(/Plafond par scan atteint \((\d+)\)\..*/, "Plafond par scan atteint ($1) — alertes restantes différées")
+    .replace(/Plafond journalier atteint \((\d+)\)\..*/, "Plafond journalier atteint ($1) — alertes restantes différées")
+    .replace(/Heures calmes : alerte (.+) reportée\..*/, "Heures calmes : alerte « $1 » reportée");
 }
 
 function updateById(items, id, patch) {

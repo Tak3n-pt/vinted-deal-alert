@@ -31,6 +31,36 @@ test("stores observed listings and prevents duplicate alerts until a 10% drop", 
   assert.equal(await store.shouldSendAlert(scoredDeal(610, 620)), true);
 });
 
+test("re-alert threshold is configurable per call", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "vinted-realert-")), "deals.sqlite");
+  const store = await DealStore.open(path);
+  await store.recordAlert(scoredDeal(1000));
+  // 5% drop threshold: 950 must be enough to re-alert.
+  assert.equal(await store.shouldSendAlert(scoredDeal(950), 0.05), true);
+  // Default 10% drop: 950 NOT enough.
+  assert.equal(await store.shouldSendAlert(scoredDeal(950)), false);
+  // 20% drop: 950 not enough, 800 is.
+  assert.equal(await store.shouldSendAlert(scoredDeal(950), 0.20), false);
+  assert.equal(await store.shouldSendAlert(scoredDeal(800), 0.20), true);
+  // Reserve respects the same parameter.
+  assert.equal(await store.reserveAlert(scoredDeal(950), 0.05), true);
+});
+
+test("alertsInLast24h counts only sent alerts in the last 24 hours", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "vinted-daily-")), "deals.sqlite");
+  const store = await DealStore.open(path);
+  assert.equal(await store.alertsInLast24h(), 0);
+  await store.recordAlert(scoredDeal(800));
+  assert.equal(await store.alertsInLast24h(), 1);
+  // A reservation that hasn't been promoted to 'sent' shouldn't count.
+  const other = scoredDeal(700);
+  other.listing.id = "listing-2";
+  await store.reserveAlert(other);
+  assert.equal(await store.alertsInLast24h(), 1);
+  await store.recordAlert(other);
+  assert.equal(await store.alertsInLast24h(), 2);
+});
+
 test("stores final observed costs and ignores unrealistic low prices in benchmark history", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "vinted-deals-")), "deals.sqlite");
   const store = await DealStore.open(path);

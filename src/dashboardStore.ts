@@ -17,6 +17,12 @@ import type {
 const DEFAULT_MIN_SCORE = 82;
 const DEFAULT_MIN_DISCOUNT = 0.22;
 const DEFAULT_MIN_SAVINGS = 80;
+const DEFAULT_RE_ALERT_DROP = 0.10;
+const DEFAULT_MAX_ALERTS_PER_SCAN = 0;
+const DEFAULT_MAX_ALERTS_PER_DAY = 0;
+const DEFAULT_QUIET_HOURS_ENABLED = false;
+const DEFAULT_QUIET_HOURS_START = "23:00";
+const DEFAULT_QUIET_HOURS_END = "08:00";
 
 const DEFAULT_MODEL_RULES: ModelRule[] = [
   { model: "iPhone 13 Pro", enabled: true, storagesGb: [128, 256, 512] },
@@ -64,7 +70,9 @@ const DEFAULT_RISK_RULES: RiskRules = {
   minSellerReviews: 0,
   minSellerRating: 0,
   minBatteryHealth: 80,
-  allowedCountries: []
+  allowedCountries: [],
+  customExcludeKeywords: [],
+  customExcludeSeverity: "reject"
 };
 
 export class DashboardStore {
@@ -117,6 +125,12 @@ export class DashboardStore {
       minScore: await this.percentIntSetting("minScore", DEFAULT_MIN_SCORE),
       minDiscount: await this.numberSetting("minDiscount", DEFAULT_MIN_DISCOUNT),
       minSavings: await this.numberSetting("minSavings", DEFAULT_MIN_SAVINGS),
+      reAlertDropPercent: await this.fractionSetting("reAlertDropPercent", DEFAULT_RE_ALERT_DROP),
+      maxAlertsPerScan: await this.nonNegativeIntSetting("maxAlertsPerScan", DEFAULT_MAX_ALERTS_PER_SCAN),
+      maxAlertsPerDay: await this.nonNegativeIntSetting("maxAlertsPerDay", DEFAULT_MAX_ALERTS_PER_DAY),
+      quietHoursEnabled: await this.boolSetting("quietHoursEnabled", DEFAULT_QUIET_HOURS_ENABLED),
+      quietHoursStart: validHHMMor(await this.setting("quietHoursStart", DEFAULT_QUIET_HOURS_START), DEFAULT_QUIET_HOURS_START),
+      quietHoursEnd: validHHMMor(await this.setting("quietHoursEnd", DEFAULT_QUIET_HOURS_END), DEFAULT_QUIET_HOURS_END),
       discordWebhookConfigured: (await this.hasSecret("discordWebhookUrl")) || Boolean(baseConfig.discordWebhookUrl),
       apifyTokenConfigured: (await this.hasSecret("apifyToken")) || Boolean(baseConfig.apifyToken),
       authorizedDataApiKeyConfigured: (await this.hasSecret("authorizedDataApiKey")) || Boolean(baseConfig.authorizedDataApiKey)
@@ -139,6 +153,12 @@ export class DashboardStore {
     if (input.minScore !== undefined) await this.upsertSetting("minScore", String(clampInt(input.minScore, 0, 100, "minScore")), false);
     if (input.minDiscount !== undefined) await this.upsertSetting("minDiscount", String(fraction(input.minDiscount, "minDiscount")), false);
     if (input.minSavings !== undefined) await this.upsertSetting("minSavings", String(nonNegativeNumber(input.minSavings, "minSavings")), false);
+    if (input.reAlertDropPercent !== undefined) await this.upsertSetting("reAlertDropPercent", String(fraction(input.reAlertDropPercent, "reAlertDropPercent")), false);
+    if (input.maxAlertsPerScan !== undefined) await this.upsertSetting("maxAlertsPerScan", String(nonNegativeInt(input.maxAlertsPerScan, "maxAlertsPerScan")), false);
+    if (input.maxAlertsPerDay !== undefined) await this.upsertSetting("maxAlertsPerDay", String(nonNegativeInt(input.maxAlertsPerDay, "maxAlertsPerDay")), false);
+    if (input.quietHoursEnabled !== undefined) await this.upsertSetting("quietHoursEnabled", String(input.quietHoursEnabled), false);
+    if (input.quietHoursStart !== undefined) await this.upsertSetting("quietHoursStart", requireHHMM(input.quietHoursStart, "quietHoursStart"), false);
+    if (input.quietHoursEnd !== undefined) await this.upsertSetting("quietHoursEnd", requireHHMM(input.quietHoursEnd, "quietHoursEnd"), false);
 
     if (input.discordWebhookUrl !== undefined && input.discordWebhookUrl.trim()) {
       await this.upsertSetting("discordWebhookUrl", input.discordWebhookUrl.trim(), true);
@@ -195,6 +215,14 @@ export class DashboardStore {
         minSavings: view.minSavings,
         modelRules: await this.listModelRules(),
         riskRules: await this.getRiskRules()
+      },
+      delivery: {
+        reAlertDropPercent: view.reAlertDropPercent,
+        maxAlertsPerScan: view.maxAlertsPerScan,
+        maxAlertsPerDay: view.maxAlertsPerDay,
+        quietHoursEnabled: view.quietHoursEnabled,
+        quietHoursStart: view.quietHoursStart,
+        quietHoursEnd: view.quietHoursEnd
       }
     };
   }
@@ -215,8 +243,9 @@ export class DashboardStore {
       }));
   }
 
-  async createSearch(input: DashboardSearchInput): Promise<DashboardSearch> {
+  async createSearch(input: DashboardSearchInput, fallbackCap?: number): Promise<DashboardSearch> {
     const normalized = normalizeSearch(input);
+    await this.assertSearchBudget(undefined, normalized, fallbackCap);
     const id = await this.db.insert(
       `insert into dashboard_searches
         (enabled, query, url, market, search_limit, sort, created_at, updated_at)
@@ -227,9 +256,10 @@ export class DashboardStore {
     return this.getSearch(id);
   }
 
-  async updateSearch(id: number, input: DashboardSearchInput): Promise<DashboardSearch> {
+  async updateSearch(id: number, input: DashboardSearchInput, fallbackCap?: number): Promise<DashboardSearch> {
     const existing = await this.getSearch(id);
     const normalized = normalizeSearch({ ...existing, ...input });
+    await this.assertSearchBudget(id, normalized, fallbackCap);
     await this.db.run(
       `update dashboard_searches
        set enabled = ?, query = ?, url = ?, market = ?, search_limit = ?, sort = ?, updated_at = CURRENT_TIMESTAMP
@@ -238,6 +268,41 @@ export class DashboardStore {
     );
     await this.log("info", `Recherche mise à jour : ${normalized.query || normalized.url || "url"}`);
     return this.getSearch(id);
+  }
+
+  /**
+   * Reject saves that would push the sum of *enabled* search limits above the
+   * configured `maxProductsPerScan`. Catches misconfigurations at save time
+   * instead of letting the next scheduled scan blow up silently.
+   *
+   * The cap is resolved from `dashboard_settings` first (the runtime override),
+   * falling back to the caller-supplied default (typically `baseConfig.maxProductsPerScan`)
+   * so a fresh install with no DB rows still gets the same gate the bot
+   * itself uses.
+   */
+  private async assertSearchBudget(
+    updatingId: number | undefined,
+    candidate: Required<DashboardSearchInput>,
+    fallbackCap: number | undefined
+  ): Promise<void> {
+    if (!candidate.enabled) return;
+    const row = await this.db.get("select value from dashboard_settings where key = 'maxProductsPerScan'");
+    let cap = Number(row?.value ?? Number.NaN);
+    if (!Number.isFinite(cap) || cap <= 0) cap = Number(fallbackCap ?? Number.NaN);
+    if (!Number.isFinite(cap) || cap <= 0) return;
+    const others = await this.db.all(
+      updatingId === undefined
+        ? "select search_limit from dashboard_searches where enabled = 1"
+        : "select search_limit from dashboard_searches where enabled = 1 and id <> ?",
+      updatingId === undefined ? [] : [updatingId]
+    );
+    const total = others.reduce((sum, r) => sum + Number(r.search_limit ?? 0), 0) + candidate.limit;
+    if (total > cap) {
+      throw new Error(
+        `Budget dépassé : ${total} produits demandés au total alors que MAX_PRODUCTS_PER_SCAN=${cap}. ` +
+          `Réduire la limite de cette recherche, désactiver une autre, ou augmenter la limite globale.`
+      );
+    }
   }
 
   async deleteSearch(id: number): Promise<void> {
@@ -251,11 +316,12 @@ export class DashboardStore {
   }
 
   async replaceModelRules(rules: ModelRule[]): Promise<ModelRule[]> {
-    await this.db.run("delete from dashboard_model_rules");
-    for (const rule of rules) {
-      const normalized = normalizeModelRule(rule);
-      await this.insertModelRule(normalized);
-    }
+    await this.db.transaction(async () => {
+      await this.db.run("delete from dashboard_model_rules");
+      for (const rule of rules) {
+        await this.insertModelRule(normalizeModelRule(rule));
+      }
+    });
     await this.log("info", "Règles des modèles mises à jour");
     return this.listModelRules();
   }
@@ -272,8 +338,8 @@ export class DashboardStore {
       `insert into dashboard_risk_rules
         (id, reject_high_risks, allow_missing_image, reject_non_original_screen, reject_screen_replaced,
          reject_missing_invoice, min_seller_reviews, min_seller_rating, min_battery_health,
-         allowed_countries_json, updated_at)
-       values (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         allowed_countries_json, custom_exclude_keywords_json, custom_exclude_severity, updated_at)
+       values (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
        on conflict(id) do update set
          reject_high_risks = excluded.reject_high_risks,
          allow_missing_image = excluded.allow_missing_image,
@@ -284,6 +350,8 @@ export class DashboardStore {
          min_seller_rating = excluded.min_seller_rating,
          min_battery_health = excluded.min_battery_health,
          allowed_countries_json = excluded.allowed_countries_json,
+         custom_exclude_keywords_json = excluded.custom_exclude_keywords_json,
+         custom_exclude_severity = excluded.custom_exclude_severity,
          updated_at = CURRENT_TIMESTAMP`,
       [
         normalized.rejectHighRisks ? 1 : 0,
@@ -294,7 +362,9 @@ export class DashboardStore {
         normalized.minSellerReviews,
         normalized.minSellerRating,
         normalized.minBatteryHealth,
-        JSON.stringify(normalized.allowedCountries)
+        JSON.stringify(normalized.allowedCountries),
+        JSON.stringify(normalized.customExcludeKeywords),
+        normalized.customExcludeSeverity
       ]
     );
     await this.log("info", "Règles de risque mises à jour");
@@ -327,36 +397,65 @@ export class DashboardStore {
   }
 
   async recordDealCandidates(scanRunId: number | undefined, deals: ScoredDeal[], sentIds: Set<string>): Promise<void> {
-    for (const deal of deals) {
+    if (deals.length === 0) return;
+    await this.db.transaction(async () => {
+      for (const deal of deals) {
+        await this.db.run(
+          `insert into deal_candidates
+            (scan_run_id, listing_id, title, model, storage_gb, final_price, benchmark_price,
+             discount_percent, savings, score, should_alert, sent, url, image_url, seller_name,
+             risk_level, risks_json, reasons_json, rejection_reasons_json, created_at)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          [
+            scanRunId ?? null,
+            deal.listing.id,
+            deal.listing.title,
+            deal.match.model,
+            deal.match.storageGb ?? null,
+            deal.finalPrice,
+            deal.benchmarkPrice,
+            deal.discountPercent,
+            deal.savings,
+            deal.score,
+            deal.shouldAlert ? 1 : 0,
+            sentIds.has(deal.listing.id) ? 1 : 0,
+            deal.listing.url,
+            deal.listing.imageUrl ?? null,
+            deal.listing.sellerName ?? null,
+            riskLevel(deal),
+            JSON.stringify(deal.risks),
+            JSON.stringify(deal.reasons),
+            JSON.stringify(deal.rejectionReasons)
+          ]
+        );
+      }
+    });
+  }
+
+  async pruneRetention(options: { dealCandidatesKeep: number; logsKeep: number; scanRunsKeep: number }): Promise<void> {
+    await this.deleteExceeding("deal_candidates", options.dealCandidatesKeep);
+    await this.deleteExceeding("dashboard_logs", options.logsKeep);
+    await this.deleteExceeding("scan_runs", options.scanRunsKeep);
+  }
+
+  private async deleteExceeding(table: string, keep: number): Promise<void> {
+    const safeKeep = Math.max(100, Math.floor(keep));
+    // Look up the id at position `safeKeep` (0-indexed) when ordered newest
+    // first — that's the first row to drop. Delete everything with id ≤ that.
+    // When fewer rows exist, the subquery is empty and nothing is deleted.
+    if (this.db.dialect === "postgres") {
       await this.db.run(
-        `insert into deal_candidates
-          (scan_run_id, listing_id, title, model, storage_gb, final_price, benchmark_price,
-           discount_percent, savings, score, should_alert, sent, url, image_url, seller_name,
-           risk_level, risks_json, reasons_json, rejection_reasons_json, created_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-        [
-          scanRunId ?? null,
-          deal.listing.id,
-          deal.listing.title,
-          deal.match.model,
-          deal.match.storageGb ?? null,
-          deal.finalPrice,
-          deal.benchmarkPrice,
-          deal.discountPercent,
-          deal.savings,
-          deal.score,
-          deal.shouldAlert ? 1 : 0,
-          sentIds.has(deal.listing.id) ? 1 : 0,
-          deal.listing.url,
-          deal.listing.imageUrl ?? null,
-          deal.listing.sellerName ?? null,
-          riskLevel(deal),
-          JSON.stringify(deal.risks),
-          JSON.stringify(deal.reasons),
-          JSON.stringify(deal.rejectionReasons)
-        ]
+        `delete from ${table}
+         where id <= (select id from ${table} order by id desc offset ? limit 1)`,
+        [safeKeep]
       );
+      return;
     }
+    await this.db.run(
+      `delete from ${table}
+       where id <= (select id from ${table} order by id desc limit 1 offset ?)`,
+      [safeKeep]
+    );
   }
 
   async listScanRuns(limit = 50): Promise<ScanRunRecord[]> {
@@ -461,6 +560,12 @@ export class DashboardStore {
     return value;
   }
 
+  private async fractionSetting(key: string, fallback: number): Promise<number> {
+    const value = Number(await this.setting(key, String(fallback)));
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(1, Math.max(0, value));
+  }
+
   private async boolSetting(key: string, fallback: boolean): Promise<boolean> {
     const value = (await this.setting(key, String(fallback))).toLowerCase();
     if (["true", "1", "yes", "on"].includes(value)) return true;
@@ -521,6 +626,8 @@ export class DashboardStore {
           min_seller_rating real not null default 0,
           min_battery_health integer not null default 80,
           allowed_countries_json text not null default '[]',
+          custom_exclude_keywords_json text not null default '[]',
+          custom_exclude_severity text not null default 'reject',
           updated_at timestamptz not null
         );
 
@@ -579,6 +686,10 @@ export class DashboardStore {
           created_at timestamptz not null
         );
       `);
+      // Backfill columns for existing postgres installs that pre-date the
+      // custom-keyword exclude feature.
+      await this.addColumnIfMissing("dashboard_risk_rules", "custom_exclude_keywords_json", "text not null default '[]'");
+      await this.addColumnIfMissing("dashboard_risk_rules", "custom_exclude_severity", "text not null default 'reject'");
       return;
     }
 
@@ -624,6 +735,8 @@ export class DashboardStore {
         min_seller_rating real not null default 0,
         min_battery_health integer not null default 80,
         allowed_countries_json text not null default '[]',
+        custom_exclude_keywords_json text not null default '[]',
+        custom_exclude_severity text not null default 'reject',
         updated_at text not null
       );
 
@@ -682,6 +795,20 @@ export class DashboardStore {
         created_at text not null
       );
     `);
+    // Backfill columns for existing sqlite installs that pre-date the
+    // custom-keyword exclude feature.
+    await this.addColumnIfMissing("dashboard_risk_rules", "custom_exclude_keywords_json", "text not null default '[]'");
+    await this.addColumnIfMissing("dashboard_risk_rules", "custom_exclude_severity", "text not null default 'reject'");
+  }
+
+  private async addColumnIfMissing(table: string, column: string, definition: string): Promise<void> {
+    if (this.db.dialect === "postgres") {
+      await this.db.exec(`alter table ${table} add column if not exists ${column} ${definition}`);
+      return;
+    }
+    const rows = await this.db.all(`pragma table_info(${table})`);
+    if (rows.some((row) => row.name === column)) return;
+    await this.db.exec(`alter table ${table} add column ${column} ${definition}`);
   }
 }
 
@@ -715,6 +842,9 @@ function normalizeModelRule(rule: ModelRule): ModelRule {
 }
 
 function normalizeRiskRules(rules: RiskRules): RiskRules {
+  const keywords = (rules.customExcludeKeywords ?? [])
+    .map((keyword) => String(keyword).trim())
+    .filter((keyword) => keyword.length > 0 && keyword.length <= 64);
   return {
     rejectHighRisks: Boolean(rules.rejectHighRisks),
     allowMissingImage: Boolean(rules.allowMissingImage),
@@ -724,7 +854,11 @@ function normalizeRiskRules(rules: RiskRules): RiskRules {
     minSellerReviews: nonNegativeInt(rules.minSellerReviews, "minSellerReviews"),
     minSellerRating: clampNumber(rules.minSellerRating, 0, 5, "minSellerRating"),
     minBatteryHealth: clampInt(rules.minBatteryHealth, 0, 100, "minBatteryHealth"),
-    allowedCountries: [...new Set(rules.allowedCountries.map((country) => country.trim().toUpperCase()).filter(Boolean))]
+    allowedCountries: [...new Set(rules.allowedCountries.map((country) => country.trim().toUpperCase()).filter(Boolean))],
+    customExcludeKeywords: [...new Set(keywords.map((keyword) => keyword.toLowerCase()))].slice(0, 50),
+    customExcludeSeverity: rules.customExcludeSeverity === "high" || rules.customExcludeSeverity === "medium"
+      ? rules.customExcludeSeverity
+      : "reject"
   };
 }
 
@@ -770,8 +904,15 @@ function riskRulesFromRow(row: Record<string, unknown>): RiskRules {
     minSellerReviews: Number(row.min_seller_reviews ?? 0),
     minSellerRating: Number(row.min_seller_rating ?? 0),
     minBatteryHealth: Number(row.min_battery_health ?? 80),
-    allowedCountries: parseStringArray(row.allowed_countries_json)
+    allowedCountries: parseStringArray(row.allowed_countries_json),
+    customExcludeKeywords: parseStringArray(row.custom_exclude_keywords_json),
+    customExcludeSeverity: severityFromRow(row.custom_exclude_severity)
   });
+}
+
+function severityFromRow(value: unknown): RiskRules["customExcludeSeverity"] {
+  if (value === "high" || value === "medium") return value;
+  return "reject";
 }
 
 function scanRunFromRow(row: Record<string, unknown>): ScanRunRecord {
@@ -904,6 +1045,18 @@ function clampNumber(value: number, min: number, max: number, field: string): nu
 
 function fraction(value: number, field: string): number {
   return clampNumber(value, 0, 1, field);
+}
+
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function requireHHMM(value: string, field: string): string {
+  const text = String(value).trim();
+  if (!HHMM_RE.test(text)) throw new Error(`${field} must be HH:MM (24h, e.g. 23:00)`);
+  return text;
+}
+
+function validHHMMor(value: string, fallback: string): string {
+  return HHMM_RE.test(value) ? value : fallback;
 }
 
 function scanSource(value: unknown): ScanRunRecord["source"] {

@@ -7,14 +7,24 @@ const REJECT_PATTERNS: Array<[RegExp, string, string]> = [
   [/\b(?:pour\s*pi[eè]ces|for\s*parts|pi[eè]ces\s*d[eé]tach[eé]es)\b/i, "parts-only", "vendu pour pièces"],
   [/\b(?:ne\s*s['’]?allume\s*pas|does\s*not\s*turn\s*on|dead|hs)\b/i, "does-not-turn-on", "ne s'allume pas"],
   [/\b(?:r[eé]plique|replica|fake|clone|dummy|factice)\b/i, "replica-or-dummy", "réplique ou factice"],
-  [/\b(?:apple\s*watch|airpods|ipad)\b/i, "bundle-or-different-device", "lot ou appareil différent"]
+  [/\b(?:apple\s*watch|airpods|ipad)\b/i, "bundle-or-different-device", "lot ou appareil différent"],
+  // Vinted scam patterns: sellers asking to leave the platform for payment
+  // are a red flag because Vinted's buyer protection doesn't cover off-platform
+  // sales. Anchored to explicit payment / "hors Vinted" intent to avoid
+  // matching legitimate "pas de WhatsApp" disclaimers.
+  [/\b(?:hors\s*vinted|en\s*dehors\s*de\s*vinted|paypal\s*(?:friends|amis|f\s*&\s*f|f\.?\s*f\.?))\b/i, "off-platform-payment", "paiement hors Vinted"],
+  // Already-sold / reserved listings — bot would alert on a deal that can't
+  // be bought. Use anchored phrases to avoid matching e.g. "non vendu (encore)".
+  [/\b(?:d[eé]j[aà]\s*(?:vendu|reserv[eé])|sold\s*out|annonce\s*r[eé]serv[eé]e?|article\s*r[eé]serv[eé]e?)\b/i, "already-sold", "déjà vendu / réservé"]
 ];
 
 const ACCESSORY_ONLY_PATTERNS: RegExp[] = [
   /\b(?:coque|case|cover|housse|etui|[eé]tui|funda|hoesje|h[uü]lle|capa|custodia|bumper|burga)\b/i,
   /\b(?:display|schermo|lcd|screen|[eé]cran)\s+(?:original|originale|for|pour|iphone|samsung|galaxy)\b/i,
   /\b(?:chargeur|charger|cable|c[âa]ble|adapter|adaptateur|accessoire|protection|protector|screen\s*protector|verre\s*tremp[eé]|film\s*(?:protecteur|protection))\b/i,
-  /\b(?:lot\s+de\s+)?(?:coques|cases|covers|housses|etuis|[eé]tuis|fundas|hoesjes|h[uü]llen|chargeurs|chargers|cables|accessoires|protections)\b/i
+  /\b(?:lot\s+de\s+)?(?:coques|cases|covers|housses|etuis|[eé]tuis|fundas|hoesjes|h[uü]llen|chargeurs|chargers|cables|accessoires|protections)\b/i,
+  // Replacement parts often listed with the model name in the title.
+  /\b(?:vitre\s*(?:arri[eè]re|avant)|battery\s*(?:replacement|remplacement)|batterie\s*(?:de\s*remplacement|seule)|nappe|connecteur|haut[\s-]parleur|micro|caméra|camera)\s+(?:pour\s+)?(?:iphone|samsung|galaxy|pixel)/i
 ];
 
 const HIGH_PATTERNS: Array<[RegExp, string, string]> = [
@@ -22,7 +32,12 @@ const HIGH_PATTERNS: Array<[RegExp, string, string]> = [
   [/\b(?:ecran|[eé]cran|screen)\s*(?:cass[eé]|cracked|fissur[eé])/i, "cracked-screen", "écran cassé"],
   [/\b(?:dos|back|vitre\s*arri[eè]re)\s*(?:cass[eé]|cracked|fissur[eé])/i, "cracked-back", "dos cassé"],
   [/\b(?:batterie|battery)\s*(?:hs|faible|weak|a\s*changer|[aà]\s*changer)\b/i, "battery-problem", "problème batterie"],
-  [/\b(?:ecran|[eé]cran|screen)\s*(?:non\s*original|compatible|copy|copie)\b/i, "non-original-screen", "écran non original"]
+  [/\b(?:ecran|[eé]cran|screen)\s*(?:non\s*original|compatible|copy|copie)\b/i, "non-original-screen", "écran non original"],
+  // Sellers asking to be contacted on an external platform are suspicious but
+  // not always scams (some legitimately want to discuss logistics off-Vinted).
+  // Flag as high-severity so the dashboard / risk rules can still allow them
+  // when the operator opts in.
+  [/\b(?:contact(?:ez)?|joignez|appelez|ecrivez|message|message-?moi|envoie[zr]?)[^\n.]{0,40}\b(?:whatsapp|telegram|signal|insta(?:gram)?|sms)\b/i, "contact-off-platform", "contact hors Vinted demandé"]
 ];
 
 const MEDIUM_PATTERNS: Array<[RegExp, string, string]> = [
