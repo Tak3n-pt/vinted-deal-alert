@@ -158,6 +158,77 @@ Recommandé en plus en ligne :
   ne jamais exposer le dashboard publiquement.
 - Allowlist d’IP côté reverse-proxy si Cloudflare Access n’est pas une option.
 
+## Mode multi-utilisateur (Discord OAuth)
+
+Depuis V0.2, le dashboard supporte plusieurs utilisateurs connectés via OAuth
+Discord, chacun avec ses propres recherches, règles, et webhook Discord.
+
+### Création de l’application Discord
+
+1. Aller sur https://discord.com/developers/applications, créer une nouvelle
+   application.
+2. Onglet **OAuth2** → **General** → ajouter le redirect URI :
+   `https://app.bonoitec.com/api/auth/discord/callback` (ou la base URL de ton
+   déploiement).
+3. Copier `CLIENT_ID` et `CLIENT_SECRET`.
+4. Aucune permission de bot n’est nécessaire — seules les scopes `identify` et
+   `email` sont demandées au login.
+
+### Variables d’environnement
+
+```env
+# OAuth Discord
+DISCORD_OAUTH_CLIENT_ID=...
+DISCORD_OAUTH_CLIENT_SECRET=...
+DISCORD_OAUTH_REDIRECT_URI=https://app.bonoitec.com/api/auth/discord/callback
+
+# URL publique (sert aussi à fixer le domaine cookie en production)
+PUBLIC_BASE_URL=https://app.bonoitec.com
+
+# Liste d'accès anticipé (Discord snowflake IDs séparés par virgules).
+# Vide = tout le monde peut se connecter. Les utilisateurs plan='admin'
+# bypassent ce filtre.
+BETA_DISCORD_IDS=123456789012345678,234567890123456789
+
+# Clé de chiffrement pour les webhooks Discord par utilisateur (32 octets base64).
+# Générer avec : node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+DASHBOARD_ENCRYPTION_KEY=...
+
+# Connexion par mot de passe — désactivée par défaut en production (OAuth est
+# la voie principale). Mettre à "1" pour conserver un accès secours.
+LEGACY_PASSWORD_LOGIN=
+```
+
+### Domaine personnalisé sur Render
+
+1. Render → service → **Settings** → **Custom Domains** → ajouter
+   `app.bonoitec.com`.
+2. Render renvoie un CNAME (typiquement `vinted-deal-alert-dashboard.onrender.com`).
+3. Côté DNS (Vercel ou autre), créer un enregistrement CNAME `app` pointant vers
+   la cible Render. Le SSL Let’s Encrypt est provisionné automatiquement, ~10 min.
+4. Mettre à jour le redirect URI Discord pour pointer vers le nouveau domaine.
+
+### Utilisateurs et plans
+
+- **`admin`** (id = 1, seedé automatiquement) : accès aux paramètres globaux,
+  scan manuel, pause/reprise. Peut utiliser `DISCORD_WEBHOOK_URL` du `.env` si
+  pas de webhook personnel configuré dans le dashboard.
+- **`pro`** : pas de limite quotidienne basse (à câbler manuellement via SQL ou
+  via une route admin à venir).
+- **`free`** (par défaut) : 30 produits/jour via `daily_apify_quota`. Modifiable
+  par utilisateur.
+
+### Quota Apify
+
+Chaque utilisateur a un compteur quotidien `usage_log.products_fetched`. Si la
+somme du jour atteint `users.daily_apify_quota`, le bot saute ses scans jusqu’au
+lendemain. Le compteur se remet à zéro à minuit (jour calendaire UTC côté DB).
+
+### Endpoint santé
+
+`GET /healthz` retourne `{ ok: true }` — utile pour les sondes UptimeRobot ou
+Render health checks.
+
 ## Déploiement
 
 ### Render + Neon (recommandé sans carte bancaire)
@@ -165,7 +236,8 @@ Recommandé en plus en ligne :
 - Build command : `npm ci && npm run build`
 - Start command : `npm run serve`
 - Variables : `NODE_ENV=production`, `DASHBOARD_COOKIE_SECURE=true`,
-  `DATABASE_URL=<connexion Neon>`, `DASHBOARD_ADMIN_PASSWORD=<phrase de passe forte>`.
+  `DATABASE_URL=<connexion Neon>`, `DASHBOARD_ADMIN_PASSWORD=<phrase de passe forte>`,
+  plus les variables OAuth ci-dessus si tu veux le mode multi-utilisateur.
 
 Quand `DATABASE_URL` est présent, le dashboard, l’historique et les alertes
 envoyées utilisent Postgres. Sans `DATABASE_URL`, le projet utilise SQLite local.
