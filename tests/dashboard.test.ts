@@ -134,8 +134,13 @@ test("dashboard accepts a zero minimum score without breaking settings reads", a
 test("dashboard marks session cookies secure in production", async () => {
   const previousNodeEnv = process.env.NODE_ENV;
   const previousSecure = process.env.DASHBOARD_COOKIE_SECURE;
+  const previousLegacy = process.env.LEGACY_PASSWORD_LOGIN;
   process.env.NODE_ENV = "production";
   delete process.env.DASHBOARD_COOKIE_SECURE;
+  // Password login is gated in production once Discord OAuth is the primary
+  // path. Re-enable it explicitly for this test which exercises the password
+  // flow specifically to verify cookie security flags.
+  process.env.LEGACY_PASSWORD_LOGIN = "1";
 
   const fixture = await dashboardFixture();
   try {
@@ -153,6 +158,8 @@ test("dashboard marks session cookies secure in production", async () => {
     else process.env.NODE_ENV = previousNodeEnv;
     if (previousSecure === undefined) delete process.env.DASHBOARD_COOKIE_SECURE;
     else process.env.DASHBOARD_COOKIE_SECURE = previousSecure;
+    if (previousLegacy === undefined) delete process.env.LEGACY_PASSWORD_LOGIN;
+    else process.env.LEGACY_PASSWORD_LOGIN = previousLegacy;
   }
 });
 

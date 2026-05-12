@@ -246,12 +246,19 @@ async function handleApi(
   }
 
   const token = sessionToken(req);
-  if (!token || !(await dashboardStore.validateSession(hashToken(token)))) {
+  const userId = token ? await dashboardStore.getSessionUser(hashToken(token)) : null;
+  if (!token || !userId) {
     throw new HttpError(401, "Authentification requise");
   }
+  const sessionUser = await dashboardStore.getUserById(userId);
+  if (!sessionUser) throw new HttpError(401, "Utilisateur introuvable");
+  const isAdmin = sessionUser.plan === "admin";
+  const requireAdmin = () => {
+    if (!isAdmin) throw new HttpError(403, "Réservé à l'administrateur");
+  };
 
   // Per-session write rate-limit. We key on the session token so an attacker
-  // can't drain the limiter for a legit admin from the same NAT or by spoofing
+  // can't drain the limiter for a legit user from the same NAT or by spoofing
   // x-forwarded-for. Login is excluded (it has its own limiter); reads are
   // unrestricted.
   const isMutation = req.method === "POST" || req.method === "PUT" || req.method === "DELETE" || req.method === "PATCH";
@@ -271,15 +278,18 @@ async function handleApi(
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/bot/scan-now") {
+    requireAdmin();
     const scan = await controller.scanNow();
     sendJson(res, 200, { status: await controller.status(), scan });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/bot/pause") {
+    requireAdmin();
     sendJson(res, 200, { status: await controller.pause() });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/bot/resume") {
+    requireAdmin();
     sendJson(res, 200, { status: await controller.resume() });
     return;
   }
@@ -289,28 +299,31 @@ async function handleApi(
     return;
   }
   if (req.method === "PUT" && url.pathname === "/api/settings") {
+    requireAdmin();
     await dashboardStore.updateSettings(await readJson<DashboardSettingsInput>(req));
     sendJson(res, 200, { settings: await dashboardStore.settingsView(baseConfig) });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/settings/restore-defaults") {
-    await dashboardStore.restoreDefaults(fallbackSearches);
+    await dashboardStore.restoreDefaults(fallbackSearches, userId);
     sendJson(res, 200, {
       settings: await dashboardStore.settingsView(baseConfig),
-      searches: await dashboardStore.listSearches(),
-      modelRules: await dashboardStore.listModelRules(),
-      riskRules: await dashboardStore.getRiskRules()
+      searches: await dashboardStore.listSearches(userId),
+      modelRules: await dashboardStore.listModelRules(userId),
+      riskRules: await dashboardStore.getRiskRules(userId)
     });
     return;
   }
 
   if (url.pathname === "/api/searches") {
     if (req.method === "GET") {
-      sendJson(res, 200, { searches: await dashboardStore.listSearches() });
+      sendJson(res, 200, { searches: await dashboardStore.listSearches(userId) });
       return;
     }
     if (req.method === "POST") {
-      sendJson(res, 201, { search: await dashboardStore.createSearch(await readJson(req), baseConfig.maxProductsPerScan) });
+      sendJson(res, 201, {
+        search: await dashboardStore.createSearch(await readJson(req), baseConfig.maxProductsPerScan, userId)
+      });
       return;
     }
   }
@@ -318,50 +331,53 @@ async function handleApi(
   const searchId = routeId(url.pathname, "/api/searches/");
   if (searchId !== undefined) {
     if (req.method === "PUT") {
-      sendJson(res, 200, { search: await dashboardStore.updateSearch(searchId, await readJson(req), baseConfig.maxProductsPerScan) });
+      sendJson(res, 200, {
+        search: await dashboardStore.updateSearch(searchId, await readJson(req), baseConfig.maxProductsPerScan, userId)
+      });
       return;
     }
     if (req.method === "DELETE") {
-      await dashboardStore.deleteSearch(searchId);
+      await dashboardStore.deleteSearch(searchId, userId);
       sendJson(res, 200, { ok: true });
       return;
     }
   }
 
   if (req.method === "GET" && url.pathname === "/api/model-rules") {
-    sendJson(res, 200, { modelRules: await dashboardStore.listModelRules() });
+    sendJson(res, 200, { modelRules: await dashboardStore.listModelRules(userId) });
     return;
   }
   if (req.method === "PUT" && url.pathname === "/api/model-rules") {
     const body = await readJson<{ modelRules?: unknown } | unknown[]>(req);
     const modelRules = Array.isArray(body) ? body : body.modelRules;
     if (!Array.isArray(modelRules)) throw new HttpError(400, "modelRules doit être un tableau");
-    sendJson(res, 200, { modelRules: await dashboardStore.replaceModelRules(modelRules as ModelRule[]) });
+    sendJson(res, 200, { modelRules: await dashboardStore.replaceModelRules(modelRules as ModelRule[], userId) });
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/risk-rules") {
-    sendJson(res, 200, { riskRules: await dashboardStore.getRiskRules() });
+    sendJson(res, 200, { riskRules: await dashboardStore.getRiskRules(userId) });
     return;
   }
   if (req.method === "PUT" && url.pathname === "/api/risk-rules") {
-    sendJson(res, 200, { riskRules: await dashboardStore.updateRiskRules(await readJson(req)) });
+    sendJson(res, 200, { riskRules: await dashboardStore.updateRiskRules(await readJson(req), userId) });
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/deals") {
-    sendJson(res, 200, { deals: await dashboardStore.listDealCandidates(limitFromUrl(url, 100)) });
+    sendJson(res, 200, { deals: await dashboardStore.listDealCandidates(limitFromUrl(url, 100), userId) });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/scans") {
-    sendJson(res, 200, { scans: await dashboardStore.listScanRuns(limitFromUrl(url, 50)) });
+    sendJson(res, 200, { scans: await dashboardStore.listScanRuns(limitFromUrl(url, 50), userId) });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/logs") {
-    sendJson(res, 200, { logs: await dashboardStore.listLogs(limitFromUrl(url, 100)) });
+    sendJson(res, 200, { logs: await dashboardStore.listLogs(limitFromUrl(url, 100), userId) });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/discord/test") {
+    requireAdmin();
     await controller.testDiscord();
     sendJson(res, 200, { ok: true });
     return;

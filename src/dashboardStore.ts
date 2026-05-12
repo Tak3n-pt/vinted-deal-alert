@@ -86,29 +86,46 @@ export class DashboardStore {
     return store;
   }
 
-  async ensureDefaults(searches: SearchConfig[]): Promise<void> {
-    const searchRow = await this.db.get("select count(*) as count from dashboard_searches");
+  async ensureDefaults(searches: SearchConfig[], userId: number = 1): Promise<void> {
+    const searchRow = await this.db.get("select count(*) as count from dashboard_searches where user_id = ?", [userId]);
     if (Number(searchRow?.count ?? 0) === 0) {
-      for (const search of searches) await this.createSearch(search);
+      for (const search of searches) await this.createSearch(search, undefined, userId);
     }
 
-    const modelRow = await this.db.get("select count(*) as count from dashboard_model_rules");
+    const modelRow = await this.db.get("select count(*) as count from dashboard_model_rules where user_id = ?", [userId]);
     if (Number(modelRow?.count ?? 0) === 0) {
-      await this.replaceModelRules(DEFAULT_MODEL_RULES);
+      await this.replaceModelRules(DEFAULT_MODEL_RULES, userId);
     } else {
-      await this.ensureMissingModelRules();
+      await this.ensureMissingModelRules(userId);
     }
 
-    const riskRow = await this.db.get("select count(*) as count from dashboard_risk_rules");
+    const riskRow = await this.db.get("select count(*) as count from user_risk_rules where user_id = ?", [userId]);
     if (Number(riskRow?.count ?? 0) === 0) {
-      await this.updateRiskRules(DEFAULT_RISK_RULES);
+      await this.updateRiskRules(DEFAULT_RISK_RULES, userId);
     }
   }
 
-  async restoreDefaults(searches: SearchConfig[]): Promise<void> {
-    await this.db.exec("delete from dashboard_searches; delete from dashboard_model_rules; delete from dashboard_risk_rules;");
-    await this.ensureDefaults(searches);
-    await this.log("info", "Règles restaurées par défaut");
+  async restoreDefaults(searches: SearchConfig[], userId: number = 1): Promise<void> {
+    await this.db.run("delete from dashboard_searches where user_id = ?", [userId]);
+    await this.db.run("delete from dashboard_model_rules where user_id = ?", [userId]);
+    await this.db.run("delete from user_risk_rules where user_id = ?", [userId]);
+    await this.ensureDefaults(searches, userId);
+    await this.log("info", "Règles restaurées par défaut", userId);
+  }
+
+  /**
+   * Seed model rules + risk rules for a freshly-onboarded user. Idempotent.
+   * Searches are intentionally left empty so users add their own.
+   */
+  async seedNewUserDefaults(userId: number): Promise<void> {
+    const modelRow = await this.db.get("select count(*) as count from dashboard_model_rules where user_id = ?", [userId]);
+    if (Number(modelRow?.count ?? 0) === 0) {
+      await this.replaceModelRules(DEFAULT_MODEL_RULES, userId);
+    }
+    const riskRow = await this.db.get("select count(*) as count from user_risk_rules where user_id = ?", [userId]);
+    if (Number(riskRow?.count ?? 0) === 0) {
+      await this.updateRiskRules(DEFAULT_RISK_RULES, userId);
+    }
   }
 
   async settingsView(baseConfig: RuntimeConfig): Promise<DashboardSettingsView> {
@@ -229,12 +246,15 @@ export class DashboardStore {
     };
   }
 
-  async listSearches(): Promise<DashboardSearch[]> {
-    return (await this.db.all("select * from dashboard_searches order by id asc")).map(searchFromRow);
+  async listSearches(userId: number = 1): Promise<DashboardSearch[]> {
+    return (await this.db.all(
+      "select * from dashboard_searches where user_id = ? order by id asc",
+      [userId]
+    )).map(searchFromRow);
   }
 
-  async activeSearches(): Promise<SearchConfig[]> {
-    return (await this.listSearches())
+  async activeSearches(userId: number = 1): Promise<SearchConfig[]> {
+    return (await this.listSearches(userId))
       .filter((search) => search.enabled)
       .map((search) => ({
         market: search.market,
@@ -245,31 +265,31 @@ export class DashboardStore {
       }));
   }
 
-  async createSearch(input: DashboardSearchInput, fallbackCap?: number): Promise<DashboardSearch> {
+  async createSearch(input: DashboardSearchInput, fallbackCap?: number, userId: number = 1): Promise<DashboardSearch> {
     const normalized = normalizeSearch(input);
-    await this.assertSearchBudget(undefined, normalized, fallbackCap);
+    await this.assertSearchBudget(undefined, normalized, fallbackCap, userId);
     const id = await this.db.insert(
       `insert into dashboard_searches
-        (enabled, query, url, market, search_limit, sort, created_at, updated_at)
-       values (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-      [normalized.enabled ? 1 : 0, normalized.query, normalized.url ?? null, normalized.market, normalized.limit, normalized.sort]
+        (enabled, query, url, market, search_limit, sort, created_at, updated_at, user_id)
+       values (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)`,
+      [normalized.enabled ? 1 : 0, normalized.query, normalized.url ?? null, normalized.market, normalized.limit, normalized.sort, userId]
     );
-    await this.log("info", `Recherche créée : ${normalized.query || normalized.url || "url"}`);
-    return this.getSearch(id);
+    await this.log("info", `Recherche créée : ${normalized.query || normalized.url || "url"}`, userId);
+    return this.getSearch(id, userId);
   }
 
-  async updateSearch(id: number, input: DashboardSearchInput, fallbackCap?: number): Promise<DashboardSearch> {
-    const existing = await this.getSearch(id);
+  async updateSearch(id: number, input: DashboardSearchInput, fallbackCap?: number, userId: number = 1): Promise<DashboardSearch> {
+    const existing = await this.getSearch(id, userId);
     const normalized = normalizeSearch({ ...existing, ...input });
-    await this.assertSearchBudget(id, normalized, fallbackCap);
+    await this.assertSearchBudget(id, normalized, fallbackCap, userId);
     await this.db.run(
       `update dashboard_searches
        set enabled = ?, query = ?, url = ?, market = ?, search_limit = ?, sort = ?, updated_at = CURRENT_TIMESTAMP
-       where id = ?`,
-      [normalized.enabled ? 1 : 0, normalized.query, normalized.url ?? null, normalized.market, normalized.limit, normalized.sort, id]
+       where id = ? and user_id = ?`,
+      [normalized.enabled ? 1 : 0, normalized.query, normalized.url ?? null, normalized.market, normalized.limit, normalized.sort, id, userId]
     );
-    await this.log("info", `Recherche mise à jour : ${normalized.query || normalized.url || "url"}`);
-    return this.getSearch(id);
+    await this.log("info", `Recherche mise à jour : ${normalized.query || normalized.url || "url"}`, userId);
+    return this.getSearch(id, userId);
   }
 
   /**
@@ -285,7 +305,8 @@ export class DashboardStore {
   private async assertSearchBudget(
     updatingId: number | undefined,
     candidate: Required<DashboardSearchInput>,
-    fallbackCap: number | undefined
+    fallbackCap: number | undefined,
+    userId: number = 1
   ): Promise<void> {
     if (!candidate.enabled) return;
     const row = await this.db.get("select value from dashboard_settings where key = 'maxProductsPerScan'");
@@ -294,9 +315,9 @@ export class DashboardStore {
     if (!Number.isFinite(cap) || cap <= 0) return;
     const others = await this.db.all(
       updatingId === undefined
-        ? "select search_limit from dashboard_searches where enabled = 1"
-        : "select search_limit from dashboard_searches where enabled = 1 and id <> ?",
-      updatingId === undefined ? [] : [updatingId]
+        ? "select search_limit from dashboard_searches where enabled = 1 and user_id = ?"
+        : "select search_limit from dashboard_searches where enabled = 1 and user_id = ? and id <> ?",
+      updatingId === undefined ? [userId] : [userId, updatingId]
     );
     const total = others.reduce((sum, r) => sum + Number(r.search_limit ?? 0), 0) + candidate.limit;
     if (total > cap) {
@@ -307,42 +328,45 @@ export class DashboardStore {
     }
   }
 
-  async deleteSearch(id: number): Promise<void> {
-    const result = await this.db.run("delete from dashboard_searches where id = ?", [id]);
+  async deleteSearch(id: number, userId: number = 1): Promise<void> {
+    const result = await this.db.run("delete from dashboard_searches where id = ? and user_id = ?", [id, userId]);
     if (result.changes === 0) throw new Error("Search not found");
-    await this.log("warn", `Recherche supprimée : ${id}`);
+    await this.log("warn", `Recherche supprimée : ${id}`, userId);
   }
 
-  async listModelRules(): Promise<ModelRule[]> {
-    return (await this.db.all("select * from dashboard_model_rules order by model asc")).map(modelRuleFromRow);
+  async listModelRules(userId: number = 1): Promise<ModelRule[]> {
+    return (await this.db.all(
+      "select * from dashboard_model_rules where user_id = ? order by model asc",
+      [userId]
+    )).map(modelRuleFromRow);
   }
 
-  async replaceModelRules(rules: ModelRule[]): Promise<ModelRule[]> {
+  async replaceModelRules(rules: ModelRule[], userId: number = 1): Promise<ModelRule[]> {
     await this.db.transaction(async () => {
-      await this.db.run("delete from dashboard_model_rules");
+      await this.db.run("delete from dashboard_model_rules where user_id = ?", [userId]);
       for (const rule of rules) {
-        await this.insertModelRule(normalizeModelRule(rule));
+        await this.insertModelRule(normalizeModelRule(rule), userId);
       }
     });
-    await this.log("info", "Règles des modèles mises à jour");
-    return this.listModelRules();
+    await this.log("info", "Règles des modèles mises à jour", userId);
+    return this.listModelRules(userId);
   }
 
-  async getRiskRules(): Promise<RiskRules> {
-    const row = await this.db.get("select * from dashboard_risk_rules where id = 1");
+  async getRiskRules(userId: number = 1): Promise<RiskRules> {
+    const row = await this.db.get("select * from user_risk_rules where user_id = ?", [userId]);
     return row ? riskRulesFromRow(row) : { ...DEFAULT_RISK_RULES };
   }
 
-  async updateRiskRules(input: Partial<RiskRules>): Promise<RiskRules> {
-    const current = await this.getRiskRules();
+  async updateRiskRules(input: Partial<RiskRules>, userId: number = 1): Promise<RiskRules> {
+    const current = await this.getRiskRules(userId);
     const normalized = normalizeRiskRules({ ...current, ...input });
     await this.db.run(
-      `insert into dashboard_risk_rules
-        (id, reject_high_risks, allow_missing_image, reject_non_original_screen, reject_screen_replaced,
+      `insert into user_risk_rules
+        (user_id, reject_high_risks, allow_missing_image, reject_non_original_screen, reject_screen_replaced,
          reject_missing_invoice, min_seller_reviews, min_seller_rating, min_battery_health,
          allowed_countries_json, custom_exclude_keywords_json, custom_exclude_severity, updated_at)
-       values (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-       on conflict(id) do update set
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       on conflict(user_id) do update set
          reject_high_risks = excluded.reject_high_risks,
          allow_missing_image = excluded.allow_missing_image,
          reject_non_original_screen = excluded.reject_non_original_screen,
@@ -356,6 +380,7 @@ export class DashboardStore {
          custom_exclude_severity = excluded.custom_exclude_severity,
          updated_at = CURRENT_TIMESTAMP`,
       [
+        userId,
         normalized.rejectHighRisks ? 1 : 0,
         normalized.allowMissingImage ? 1 : 0,
         normalized.rejectNonOriginalScreen ? 1 : 0,
@@ -369,16 +394,16 @@ export class DashboardStore {
         normalized.customExcludeSeverity
       ]
     );
-    await this.log("info", "Règles de risque mises à jour");
-    return this.getRiskRules();
+    await this.log("info", "Règles de risque mises à jour", userId);
+    return this.getRiskRules(userId);
   }
 
-  async startScanRun(source: ScanRunRecord["source"], searchCount: number): Promise<number> {
+  async startScanRun(source: ScanRunRecord["source"], searchCount: number, userId: number = 1): Promise<number> {
     return this.db.insert(
       `insert into scan_runs
-        (source, status, started_at, search_count, listings, scored, alertable, sent, best_candidate)
-       values (?, 'running', CURRENT_TIMESTAMP, ?, 0, 0, 0, 0, '')`,
-      [source, searchCount]
+        (source, status, started_at, search_count, listings, scored, alertable, sent, best_candidate, user_id)
+       values (?, 'running', CURRENT_TIMESTAMP, ?, 0, 0, 0, 0, '', ?)`,
+      [source, searchCount, userId]
     );
   }
 
@@ -386,19 +411,24 @@ export class DashboardStore {
     id: number,
     status: ScanRunRecord["status"],
     result: { listings: number; scored: number; alertable: number; sent: number; bestCandidate: string },
-    error?: string
+    error?: string,
+    userId: number = 1
   ): Promise<void> {
     await this.db.run(
       `update scan_runs
        set status = ?, finished_at = CURRENT_TIMESTAMP, listings = ?, scored = ?, alertable = ?,
            sent = ?, best_candidate = ?, error = ?
-       where id = ?`,
-      [status, result.listings, result.scored, result.alertable, result.sent, result.bestCandidate, error ?? null, id]
+       where id = ? and user_id = ?`,
+      [status, result.listings, result.scored, result.alertable, result.sent, result.bestCandidate, error ?? null, id, userId]
     );
-    await this.log(status === "failed" ? "error" : "info", `Scan ${status === "failed" ? "échoué" : "réussi"} : ${result.listings} annonces, ${result.sent} alertes envoyées`);
+    await this.log(
+      status === "failed" ? "error" : "info",
+      `Scan ${status === "failed" ? "échoué" : "réussi"} : ${result.listings} annonces, ${result.sent} alertes envoyées`,
+      userId
+    );
   }
 
-  async recordDealCandidates(scanRunId: number | undefined, deals: ScoredDeal[], sentIds: Set<string>): Promise<void> {
+  async recordDealCandidates(scanRunId: number | undefined, deals: ScoredDeal[], sentIds: Set<string>, userId: number = 1): Promise<void> {
     if (deals.length === 0) return;
     await this.db.transaction(async () => {
       for (const deal of deals) {
@@ -406,8 +436,8 @@ export class DashboardStore {
           `insert into deal_candidates
             (scan_run_id, listing_id, title, model, storage_gb, final_price, benchmark_price,
              discount_percent, savings, score, should_alert, sent, url, image_url, seller_name,
-             risk_level, risks_json, reasons_json, rejection_reasons_json, created_at)
-           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+             risk_level, risks_json, reasons_json, rejection_reasons_json, created_at, user_id)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
           [
             scanRunId ?? null,
             deal.listing.id,
@@ -427,7 +457,8 @@ export class DashboardStore {
             riskLevel(deal),
             JSON.stringify(deal.risks),
             JSON.stringify(deal.reasons),
-            JSON.stringify(deal.rejectionReasons)
+            JSON.stringify(deal.rejectionReasons),
+            userId
           ]
         );
       }
@@ -460,20 +491,32 @@ export class DashboardStore {
     );
   }
 
-  async listScanRuns(limit = 50): Promise<ScanRunRecord[]> {
-    return (await this.db.all("select * from scan_runs order by id desc limit ?", [clampInt(limit, 1, 200, "limit")])).map(scanRunFromRow);
+  async listScanRuns(limit = 50, userId: number = 1): Promise<ScanRunRecord[]> {
+    return (await this.db.all(
+      "select * from scan_runs where user_id = ? order by id desc limit ?",
+      [userId, clampInt(limit, 1, 200, "limit")]
+    )).map(scanRunFromRow);
   }
 
-  async listDealCandidates(limit = 100): Promise<DealCandidateRecord[]> {
-    return (await this.db.all("select * from deal_candidates order by id desc limit ?", [clampInt(limit, 1, 300, "limit")])).map(dealCandidateFromRow);
+  async listDealCandidates(limit = 100, userId: number = 1): Promise<DealCandidateRecord[]> {
+    return (await this.db.all(
+      "select * from deal_candidates where user_id = ? order by id desc limit ?",
+      [userId, clampInt(limit, 1, 300, "limit")]
+    )).map(dealCandidateFromRow);
   }
 
-  async listLogs(limit = 100): Promise<DashboardLogRecord[]> {
-    return (await this.db.all("select * from dashboard_logs order by id desc limit ?", [clampInt(limit, 1, 300, "limit")])).map(logFromRow);
+  async listLogs(limit = 100, userId: number = 1): Promise<DashboardLogRecord[]> {
+    return (await this.db.all(
+      "select * from dashboard_logs where user_id = ? order by id desc limit ?",
+      [userId, clampInt(limit, 1, 300, "limit")]
+    )).map(logFromRow);
   }
 
-  async log(level: DashboardLogRecord["level"], message: string): Promise<void> {
-    await this.db.run("insert into dashboard_logs (level, message, created_at) values (?, ?, CURRENT_TIMESTAMP)", [level, message]);
+  async log(level: DashboardLogRecord["level"], message: string, userId: number = 1): Promise<void> {
+    await this.db.run(
+      "insert into dashboard_logs (level, message, created_at, user_id) values (?, ?, CURRENT_TIMESTAMP, ?)",
+      [level, message, userId]
+    );
   }
 
   async createSession(tokenHash: string, expiresAt: string, userId: number = 1): Promise<void> {
@@ -541,13 +584,17 @@ export class DashboardStore {
     }
     const row = await this.db.get("select * from users where discord_id = ?", [profile.id]);
     if (!row) throw new Error("upsertUserFromDiscord: user row missing after upsert");
+    const userId = Number(row.id);
     // Ensure user_settings row exists for this user
     await this.db.run(
       this.db.dialect === "postgres"
         ? "insert into user_settings (user_id) values (?) on conflict (user_id) do nothing"
         : "insert or ignore into user_settings (user_id) values (?)",
-      [Number(row.id)]
+      [userId]
     );
+    // Seed model rules + risk rules for first-time OAuth users (idempotent).
+    // Skip for the seed admin (id=1) which is bootstrapped via ensureDefaults.
+    if (userId !== 1) await this.seedNewUserDefaults(userId);
     return userFromRow(row);
   }
 
@@ -569,30 +616,31 @@ export class DashboardStore {
     await this.db.close();
   }
 
-  private async getSearch(id: number): Promise<DashboardSearch> {
-    const row = await this.db.get("select * from dashboard_searches where id = ?", [id]);
+  private async getSearch(id: number, userId: number = 1): Promise<DashboardSearch> {
+    const row = await this.db.get("select * from dashboard_searches where id = ? and user_id = ?", [id, userId]);
     if (!row) throw new Error("Search not found");
     return searchFromRow(row);
   }
 
-  private async ensureMissingModelRules(): Promise<void> {
-    const rows = await this.db.all("select model from dashboard_model_rules");
+  private async ensureMissingModelRules(userId: number = 1): Promise<void> {
+    const rows = await this.db.all("select model from dashboard_model_rules where user_id = ?", [userId]);
     const existing = new Set(rows.map((row) => String(row.model)));
     let inserted = 0;
     for (const rule of DEFAULT_MODEL_RULES) {
       if (existing.has(rule.model)) continue;
-      await this.insertModelRule(normalizeModelRule(rule));
+      await this.insertModelRule(normalizeModelRule(rule), userId);
       inserted += 1;
     }
-    if (inserted > 0) await this.log("info", `${inserted} nouveaux modèles ajoutés aux règles`);
+    if (inserted > 0) await this.log("info", `${inserted} nouveaux modèles ajoutés aux règles`, userId);
   }
 
-  private async insertModelRule(normalized: ModelRule): Promise<void> {
+  private async insertModelRule(normalized: ModelRule, userId: number = 1): Promise<void> {
     await this.db.run(
       `insert into dashboard_model_rules
-        (model, enabled, storages_json, max_final_price, min_score, min_discount, min_savings, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+        (user_id, model, enabled, storages_json, max_final_price, min_score, min_discount, min_savings, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       [
+        userId,
         normalized.model,
         normalized.enabled ? 1 : 0,
         JSON.stringify(normalized.storagesGb),
