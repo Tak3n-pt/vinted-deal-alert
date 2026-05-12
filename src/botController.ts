@@ -3,7 +3,7 @@ import { DiscordWebhook } from "./discord.js";
 import { runScan } from "./index.js";
 import type { DealStore } from "./store.js";
 import type { RuntimeConfig, SearchConfig } from "./types.js";
-import type { DealCandidateRecord, ScanRunRecord } from "./dashboardTypes.js";
+import type { DealCandidateRecord, ScanRunRecord, User } from "./dashboardTypes.js";
 import { DashboardStore } from "./dashboardStore.js";
 
 export interface BotStatus {
@@ -98,47 +98,29 @@ export class BotController {
     }
 
     this.scanInFlight = true;
-    const snapshot = await this.dashboardStore.runtimeSnapshot(this.baseConfig, this.fallbackSearches);
-    const runId = await this.dashboardStore.startScanRun(source, snapshot.searches.length);
     try {
-      const provider = createListingProvider(snapshot.config);
-      const discord = new DiscordWebhook(snapshot.config);
-      const result = await runScan({
-        provider,
-        store: this.dealStore,
-        discord,
-        searches: snapshot.searches,
-        scoringOptions: snapshot.scoringOptions,
-        delivery: snapshot.delivery,
-        scanRunId: runId,
-        dashboardStore: this.dashboardStore
-      });
-      await this.dashboardStore.completeScanRun(runId, "success", result);
-
-      // Heartbeat counts scheduled scans only — manual / dashboard-triggered
-      // scans shouldn't trigger Discord status spam.
-      if (source === "scheduled") {
-        this.scheduledScanCount += 1;
-        if (
-          snapshot.config.heartbeatEveryScans > 0 &&
-          this.scheduledScanCount % snapshot.config.heartbeatEveryScans === 0
-        ) {
-          await discord.sendStatus(
-            `Le bot Vinted fonctionne. Dernier scan : ${result.listings} annonces, ${result.alertable} alertables, ${result.sent} envoyées. Meilleur candidat : ${result.bestCandidate}.`
-          );
+      const users = await this.dashboardStore.listActiveUsers();
+      if (users.length === 0) {
+        await this.dashboardStore.log("info", "Aucun utilisateur actif — scan ignoré");
+        return;
+      }
+      // Sequential per-user scans. Parallelizing would multiply Apify spend
+      // and risk rate limits — V1 trades latency for cost predictability.
+      for (const user of users) {
+        try {
+          await this.scanForUser(user, source);
+        } catch (error) {
+          // Per-user errors are isolated — one failure shouldn't block others
+          await this.dashboardStore.log(
+            "error",
+            `Scan utilisateur échoué : ${messageFromError(error)}`,
+            user.id
+          ).catch(() => undefined);
         }
       }
-    } catch (error) {
-      await this.dashboardStore.completeScanRun(
-        runId,
-        "failed",
-        { listings: 0, scored: 0, alertable: 0, sent: 0, bestCandidate: "aucun" },
-        messageFromError(error)
-      );
-      throw error;
     } finally {
       this.scanInFlight = false;
-      // Best-effort retention prune after every scan, regardless of outcome.
+      // Best-effort retention prune after every scan tick, regardless of outcome.
       try {
         await this.dashboardStore.pruneRetention({
           dealCandidatesKeep: RETENTION_DEAL_CANDIDATES_DEFAULT,
@@ -148,6 +130,81 @@ export class BotController {
       } catch (pruneError) {
         console.error(`[retention] ${messageFromError(pruneError)}`);
       }
+    }
+  }
+
+  /**
+   * Run a scan for one specific user. Skips quota-exceeded users and users
+   * without a webhook. Records usage_log on success.
+   */
+  private async scanForUser(user: User, source: ScanRunRecord["source"]): Promise<void> {
+    // Quota gate
+    const used = await this.dashboardStore.getDailyUsage(user.id);
+    if (used >= user.dailyApifyQuota) {
+      await this.dashboardStore.log(
+        "warn",
+        `Quota journalier atteint (${used}/${user.dailyApifyQuota} produits). Scan reporté à demain.`,
+        user.id
+      );
+      return;
+    }
+
+    // Webhook resolution. Seed admin falls back to env's DISCORD_WEBHOOK_URL
+    // for legacy compatibility; everyone else must configure via the dashboard.
+    let webhookUrl = await this.dashboardStore.getDecryptedWebhook(user.id);
+    if (!webhookUrl && user.id === 1) webhookUrl = this.baseConfig.discordWebhookUrl || null;
+    if (!webhookUrl) {
+      await this.dashboardStore.log("warn", "Aucun webhook Discord configuré — scan ignoré", user.id);
+      return;
+    }
+
+    const snapshot = await this.dashboardStore.runtimeSnapshot(this.baseConfig, this.fallbackSearches, user.id);
+    if (snapshot.searches.length === 0) {
+      await this.dashboardStore.log("info", "Aucune recherche active — scan ignoré", user.id);
+      return;
+    }
+
+    // Override the shared snapshot's webhook with this user's
+    const userConfig: RuntimeConfig = { ...snapshot.config, discordWebhookUrl: webhookUrl };
+    const runId = await this.dashboardStore.startScanRun(source, snapshot.searches.length, user.id);
+    try {
+      const provider = createListingProvider(userConfig);
+      const discord = new DiscordWebhook(userConfig);
+      const result = await runScan({
+        provider,
+        store: this.dealStore,
+        discord,
+        searches: snapshot.searches,
+        scoringOptions: snapshot.scoringOptions,
+        delivery: snapshot.delivery,
+        scanRunId: runId,
+        dashboardStore: this.dashboardStore,
+        userId: user.id
+      });
+      await this.dashboardStore.completeScanRun(runId, "success", result, undefined, user.id);
+      await this.dashboardStore.recordUsage(user.id, result.listings);
+
+      // Heartbeat — admin only, scheduled scans only, doesn't apply per user
+      if (source === "scheduled" && user.plan === "admin") {
+        this.scheduledScanCount += 1;
+        if (
+          userConfig.heartbeatEveryScans > 0 &&
+          this.scheduledScanCount % userConfig.heartbeatEveryScans === 0
+        ) {
+          await discord.sendStatus(
+            `Le bot Vinted fonctionne. Dernier scan admin : ${result.listings} annonces, ${result.alertable} alertables, ${result.sent} envoyées. Meilleur candidat : ${result.bestCandidate}.`
+          );
+        }
+      }
+    } catch (error) {
+      await this.dashboardStore.completeScanRun(
+        runId,
+        "failed",
+        { listings: 0, scored: 0, alertable: 0, sent: 0, bestCandidate: "aucun" },
+        messageFromError(error),
+        user.id
+      );
+      throw error;
     }
   }
 

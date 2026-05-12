@@ -205,7 +205,11 @@ export class DashboardStore {
     return secrets;
   }
 
-  async runtimeSnapshot(baseConfig: RuntimeConfig, fallbackSearches: SearchConfig[]): Promise<DashboardRuntimeSnapshot> {
+  async runtimeSnapshot(
+    baseConfig: RuntimeConfig,
+    fallbackSearches: SearchConfig[],
+    userId: number = 1
+  ): Promise<DashboardRuntimeSnapshot> {
     const view = await this.settingsView(baseConfig);
     const secrets = await this.secrets();
     const config: RuntimeConfig = {
@@ -225,8 +229,13 @@ export class DashboardStore {
     const apifyToken = secrets.apifyToken ?? baseConfig.apifyToken;
     if (apifyToken) config.apifyToken = apifyToken;
 
-    const configuredSearches = await this.activeSearches();
-    const searches = configuredSearches.length > 0 ? configuredSearches : fallbackSearches;
+    const configuredSearches = await this.activeSearches(userId);
+    // Fallback searches only kick in for the seed admin (user_id=1). New users
+    // start with an empty list and must add their own — fallback would be
+    // confusing.
+    const searches = configuredSearches.length > 0
+      ? configuredSearches
+      : (userId === 1 ? fallbackSearches : []);
     return {
       config,
       searches,
@@ -234,8 +243,8 @@ export class DashboardStore {
         minScore: view.minScore,
         minDiscount: view.minDiscount,
         minSavings: view.minSavings,
-        modelRules: await this.listModelRules(),
-        riskRules: await this.getRiskRules()
+        modelRules: await this.listModelRules(userId),
+        riskRules: await this.getRiskRules(userId)
       },
       delivery: {
         reAlertDropPercent: view.reAlertDropPercent,
@@ -246,6 +255,59 @@ export class DashboardStore {
         quietHoursEnd: view.quietHoursEnd
       }
     };
+  }
+
+  /**
+   * Active users for the bot loop. Includes:
+   * - admin-plan users (always active)
+   * - beta_approved users with a configured webhook
+   */
+  async listActiveUsers(): Promise<User[]> {
+    const rows = await this.db.all(`
+      select u.* from users u
+      inner join user_settings s on s.user_id = u.id
+      where (u.plan = 'admin' or u.beta_approved = 1)
+        and (s.discord_webhook_configured = 1 or u.id = 1)
+      order by u.id asc
+    `);
+    return rows.map(userFromRow);
+  }
+
+  /**
+   * Increment today's usage counter for a user. Upserts a row keyed on
+   * (user_id, day) so the first call of the day inserts and subsequent calls
+   * add to the running total.
+   */
+  async recordUsage(userId: number, productsFetched: number, scansRun: number = 1): Promise<void> {
+    if (this.db.dialect === "postgres") {
+      await this.db.run(
+        `insert into usage_log (user_id, day, products_fetched, scans_run)
+         values (?, current_date, ?, ?)
+         on conflict (user_id, day) do update set
+           products_fetched = usage_log.products_fetched + excluded.products_fetched,
+           scans_run = usage_log.scans_run + excluded.scans_run`,
+        [userId, productsFetched, scansRun]
+      );
+    } else {
+      await this.db.run(
+        `insert into usage_log (user_id, day, products_fetched, scans_run)
+         values (?, date('now'), ?, ?)
+         on conflict(user_id, day) do update set
+           products_fetched = usage_log.products_fetched + excluded.products_fetched,
+           scans_run = usage_log.scans_run + excluded.scans_run`,
+        [userId, productsFetched, scansRun]
+      );
+    }
+  }
+
+  /** Products fetched today for a user. 0 if no row yet. */
+  async getDailyUsage(userId: number): Promise<number> {
+    const today = this.db.dialect === "postgres" ? "current_date" : "date('now')";
+    const row = await this.db.get(
+      `select products_fetched from usage_log where user_id = ? and day = ${today}`,
+      [userId]
+    );
+    return row ? Number(row.products_fetched ?? 0) : 0;
   }
 
   async listSearches(userId: number = 1): Promise<DashboardSearch[]> {
