@@ -13,8 +13,10 @@ import type {
   ModelRule,
   RiskRules,
   ScanRunRecord,
-  User
+  User,
+  UserSettings
 } from "./dashboardTypes.js";
+import { decryptString, encryptString, validateDiscordWebhookUrl } from "./crypto.js";
 
 const DEFAULT_MIN_SCORE = 82;
 const DEFAULT_MIN_DISCOUNT = 0.22;
@@ -610,6 +612,94 @@ export class DashboardStore {
 
   async setUserBetaApproved(id: number, approved: boolean): Promise<void> {
     await this.db.run("update users set beta_approved = ? where id = ?", [approved ? 1 : 0, id]);
+  }
+
+  /**
+   * Per-user settings (webhook, dry_run, custom thresholds). Returns
+   * `discordWebhookConfigured` as a boolean — the actual URL is never sent to
+   * the client. To use the webhook from the bot loop, call `getDecryptedWebhook`.
+   */
+  async getUserSettings(userId: number): Promise<UserSettings> {
+    const row = await this.db.get("select * from user_settings where user_id = ?", [userId]);
+    if (!row) {
+      // Defensive: ensure a row exists (upsertUserFromDiscord creates one,
+      // but the seed admin path doesn't always go through that).
+      await this.db.run(
+        this.db.dialect === "postgres"
+          ? "insert into user_settings (user_id) values (?) on conflict (user_id) do nothing"
+          : "insert or ignore into user_settings (user_id) values (?)",
+        [userId]
+      );
+      return this.getUserSettings(userId);
+    }
+    return userSettingsFromRow(row);
+  }
+
+  /**
+   * Internal use only — for the bot loop and the webhook-test route. Returns
+   * the plaintext webhook URL, or null if the user hasn't configured one.
+   */
+  async getDecryptedWebhook(userId: number): Promise<string | null> {
+    const row = await this.db.get(
+      "select discord_webhook_enc from user_settings where user_id = ?",
+      [userId]
+    );
+    if (!row || !row.discord_webhook_enc) return null;
+    try {
+      return decryptString(String(row.discord_webhook_enc));
+    } catch (error) {
+      await this.log("error", `Webhook déchiffrement échoué : ${messageFromError(error)}`, userId);
+      return null;
+    }
+  }
+
+  async setUserDiscordWebhook(userId: number, url: string | null): Promise<void> {
+    if (url === null || url === "") {
+      await this.db.run(
+        "update user_settings set discord_webhook_enc = null, discord_webhook_configured = 0, updated_at = CURRENT_TIMESTAMP where user_id = ?",
+        [userId]
+      );
+      await this.log("info", "Webhook Discord retiré", userId);
+      return;
+    }
+    const validated = validateDiscordWebhookUrl(url);
+    const enc = encryptString(validated);
+    await this.db.run(
+      "update user_settings set discord_webhook_enc = ?, discord_webhook_configured = 1, updated_at = CURRENT_TIMESTAMP where user_id = ?",
+      [enc, userId]
+    );
+    await this.log("info", "Webhook Discord configuré", userId);
+  }
+
+  async updateUserSettings(
+    userId: number,
+    input: { dryRun?: boolean; pollIntervalSeconds?: number; minDiscountPct?: number | null; maxProductPrice?: number | null }
+  ): Promise<UserSettings> {
+    await this.getUserSettings(userId); // ensure row exists
+    const updates: string[] = [];
+    const params: unknown[] = [];
+    if (input.dryRun !== undefined) {
+      updates.push("dry_run = ?");
+      params.push(input.dryRun ? 1 : 0);
+    }
+    if (input.pollIntervalSeconds !== undefined) {
+      updates.push("poll_interval_seconds = ?");
+      params.push(clampInt(input.pollIntervalSeconds, 60, 86400, "pollIntervalSeconds"));
+    }
+    if (input.minDiscountPct !== undefined) {
+      updates.push("min_discount_pct = ?");
+      params.push(input.minDiscountPct === null ? null : clampNumber(input.minDiscountPct, 0, 100, "minDiscountPct"));
+    }
+    if (input.maxProductPrice !== undefined) {
+      updates.push("max_product_price = ?");
+      params.push(input.maxProductPrice === null ? null : nonNegativeNumber(input.maxProductPrice, "maxProductPrice"));
+    }
+    if (updates.length) {
+      updates.push("updated_at = CURRENT_TIMESTAMP");
+      params.push(userId);
+      await this.db.run(`update user_settings set ${updates.join(", ")} where user_id = ?`, params);
+    }
+    return this.getUserSettings(userId);
   }
 
   async close(): Promise<void> {
@@ -1262,6 +1352,22 @@ function userFromRow(row: Record<string, unknown>): User {
     createdAt: String(row.created_at),
     lastLoginAt: row.last_login_at == null ? null : String(row.last_login_at)
   };
+}
+
+function userSettingsFromRow(row: Record<string, unknown>): UserSettings {
+  return {
+    userId: Number(row.user_id),
+    discordWebhookConfigured: Number(row.discord_webhook_configured) === 1,
+    dryRun: Number(row.dry_run) === 1,
+    pollIntervalSeconds: Number(row.poll_interval_seconds ?? 900),
+    minDiscountPct: row.min_discount_pct == null ? null : Number(row.min_discount_pct),
+    maxProductPrice: row.max_product_price == null ? null : Number(row.max_product_price),
+    updatedAt: String(row.updated_at)
+  };
+}
+
+function messageFromError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function scanRunFromRow(row: Record<string, unknown>): ScanRunRecord {

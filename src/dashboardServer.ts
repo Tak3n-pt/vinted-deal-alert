@@ -383,6 +383,48 @@ async function handleApi(
     return;
   }
 
+  // --- Per-user routes ---
+  if (req.method === "GET" && url.pathname === "/api/user/settings") {
+    sendJson(res, 200, { settings: await dashboardStore.getUserSettings(userId) });
+    return;
+  }
+  if (req.method === "PUT" && url.pathname === "/api/user/settings") {
+    const body = await readJson<{
+      discordWebhookUrl?: string | null;
+      dryRun?: boolean;
+      pollIntervalSeconds?: number;
+      minDiscountPct?: number | null;
+      maxProductPrice?: number | null;
+    }>(req);
+    if (body.discordWebhookUrl !== undefined) {
+      await dashboardStore.setUserDiscordWebhook(userId, body.discordWebhookUrl);
+    }
+    const settings = await dashboardStore.updateUserSettings(userId, body);
+    sendJson(res, 200, { settings });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/user/webhook/test") {
+    const webhook = await dashboardStore.getDecryptedWebhook(userId);
+    if (!webhook) throw new HttpError(400, "Aucun webhook configuré");
+    const probeResponse = await fetch(webhook, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        username: "Bonoitec Flash",
+        content: ":satellite: Test webhook — votre dashboard Bonoitec est bien connecté à Discord."
+      })
+    });
+    if (!probeResponse.ok) {
+      const detail = await probeResponse.text().catch(() => "");
+      throw new HttpError(
+        502,
+        `Discord a refusé le webhook (${probeResponse.status}). ${detail.slice(0, 200)}`
+      );
+    }
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   throw new HttpError(404, "Route introuvable");
 }
 
