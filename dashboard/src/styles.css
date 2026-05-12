@@ -841,3 +841,202 @@ a:focus-visible {
     text-align: left;
   }
 }
+
+/* ---------- Multi-tenant additions ---------- */
+
+.user-card {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.7rem 0.85rem;
+  margin: 0.4rem 0.6rem 1rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  color: #fff;
+}
+
+.user-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--nav-soft);
+  flex-shrink: 0;
+}
+
+.user-avatar.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+}
+
+.user-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.user-meta strong {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-badge {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  width: fit-content;
+}
+
+.plan-badge.plan-admin {
+  background: rgba(255, 200, 60, 0.16);
+  color: #fbe18a;
+}
+
+.plan-badge.plan-pro {
+  background: rgba(88, 101, 242, 0.2);
+  color: #b6c0ff;
+}
+
+.plan-badge.plan-free {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.discord-button {
+  background: #5865F2;
+  color: #fff;
+  border: none;
+}
+
+.discord-button:hover:not(:disabled) {
+  background: #4752c4;
+}
+
+.login-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0.6rem 0 0.4rem;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.login-fallback {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.login-fallback hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 0.4rem 0;
+}
+
+.link-button {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0.6rem auto 0;
+  padding: 0;
+}
+
+.link-button:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.onboarding-banner {
+  background: linear-gradient(180deg, rgba(88, 101, 242, 0.08), rgba(88, 101, 242, 0.02));
+  border: 1px solid rgba(88, 101, 242, 0.3);
+  border-radius: 14px;
+  padding: 1.1rem 1.2rem;
+  margin-bottom: 1.2rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-head {
+  display: flex;
+  gap: 0.8rem;
+  align-items: flex-start;
+}
+
+.onboarding-head svg {
+  color: #5865F2;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.onboarding-head strong {
+  display: block;
+  font-size: 15px;
+  margin-bottom: 0.2rem;
+}
+
+.onboarding-head p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.onboarding-form {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+  align-items: stretch;
+}
+
+.onboarding-form input {
+  flex: 1;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--surface);
+}
+
+.onboarding-form button {
+  white-space: nowrap;
+}
+
+.onboarding-success {
+  margin-top: 0.7rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 13px;
+  color: var(--good);
+}
+
+.secondary {
+  background: var(--surface-soft);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+}
+
+.secondary:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+@media (max-width: 640px) {
+  .onboarding-form {
+    flex-direction: column;
+  }
+}

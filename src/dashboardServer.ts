@@ -9,9 +9,19 @@ import { DashboardStore } from "./dashboardStore.js";
 import { BotController, type BotStatus } from "./botController.js";
 import type { RuntimeConfig, SearchConfig } from "./types.js";
 import type { DashboardSettingsInput, ModelRule } from "./dashboardTypes.js";
+import {
+  buildAuthorizeUrl,
+  exchangeCodeForToken,
+  fetchDiscordProfile,
+  generateOAuthState,
+  isBetaAllowed,
+  loadDiscordOAuthConfig
+} from "./discordOAuth.js";
 
 const SESSION_COOKIE = "vinted_admin_session";
+const OAUTH_STATE_COOKIE = "vinted_oauth_state";
 const SESSION_DAYS = 7;
+const OAUTH_STATE_TTL_SEC = 600;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 8;
 
@@ -131,7 +141,13 @@ async function handleApi(
   loginAttempts: Map<string, { count: number; resetAt: number }>,
   writeAttempts: Map<string, { count: number; resetAt: number }>
 ): Promise<void> {
+  // Legacy password login. Tied to user_id = 1 (the seed admin). Gated behind
+  // LEGACY_PASSWORD_LOGIN=1 in production so OAuth becomes the only entry point
+  // once the team rolls out Discord auth. Always available in non-production
+  // (NODE_ENV !== "production") for emergency operator access.
+  const legacyPasswordEnabled = process.env.NODE_ENV !== "production" || process.env.LEGACY_PASSWORD_LOGIN === "1";
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    if (!legacyPasswordEnabled) throw new HttpError(410, "Connexion par mot de passe désactivée. Utiliser Discord.");
     const loginKey = clientKey(req);
     if (isLoginLimited(loginAttempts, loginKey)) throw new HttpError(429, "Trop de tentatives de connexion. Réessayer plus tard.");
     const body = await readJson<{ password?: string }>(req);
@@ -141,24 +157,114 @@ async function handleApi(
     }
     loginAttempts.delete(loginKey);
     const token = randomBytes(32).toString("base64url");
-    await dashboardStore.createSession(hashToken(token), sessionDate(new Date(Date.now() + SESSION_DAYS * 864e5)));
+    await dashboardStore.createSession(
+      hashToken(token),
+      sessionDate(new Date(Date.now() + SESSION_DAYS * 864e5)),
+      1 /* seed admin */
+    );
     res.setHeader("set-cookie", sessionCookie(`${SESSION_COOKIE}=${token}; Max-Age=${SESSION_DAYS * 86400}`));
     sendJson(res, 200, { authenticated: true });
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/auth/discord/start") {
+    const oauthConfig = loadDiscordOAuthConfig();
+    if (!oauthConfig) throw new HttpError(503, "Discord OAuth non configuré sur ce serveur.");
+    const state = generateOAuthState();
+    const cookies = [stateCookie(`${OAUTH_STATE_COOKIE}=${state}; Max-Age=${OAUTH_STATE_TTL_SEC}`)];
+    res.setHeader("set-cookie", cookies);
+    sendRedirect(res, buildAuthorizeUrl(oauthConfig, state));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/discord/callback") {
+    const oauthConfig = loadDiscordOAuthConfig();
+    if (!oauthConfig) throw new HttpError(503, "Discord OAuth non configuré sur ce serveur.");
+    const code = url.searchParams.get("code") ?? "";
+    const state = url.searchParams.get("state") ?? "";
+    const cookieState = readCookie(req, OAUTH_STATE_COOKIE);
+    // Clear the state cookie regardless of outcome
+    const clearState = stateCookie(`${OAUTH_STATE_COOKIE}=; Max-Age=0`);
+    if (!code) {
+      res.setHeader("set-cookie", clearState);
+      throw new HttpError(400, "Code OAuth manquant");
+    }
+    if (!state || !cookieState || state !== cookieState) {
+      res.setHeader("set-cookie", clearState);
+      throw new HttpError(400, "État OAuth invalide (CSRF)");
+    }
+    const accessToken = await exchangeCodeForToken(oauthConfig, code);
+    const profile = await fetchDiscordProfile(accessToken);
+    const user = await dashboardStore.upsertUserFromDiscord(profile);
+    if (user.plan !== "admin" && !isBetaAllowed(user.discordId)) {
+      res.setHeader("set-cookie", clearState);
+      sendRedirect(res, "/?beta=denied");
+      return;
+    }
+    // Flip beta_approved=1 once the gate has been crossed so the bot loop
+    // (`listActiveUsers`) actually scans for this user. Admins skip the
+    // beta gate but their seed row already has beta_approved=1.
+    if (!user.betaApproved && user.plan !== "admin") {
+      await dashboardStore.setUserBetaApproved(user.id, true);
+    }
+    const token = randomBytes(32).toString("base64url");
+    await dashboardStore.createSession(
+      hashToken(token),
+      sessionDate(new Date(Date.now() + SESSION_DAYS * 864e5)),
+      user.id
+    );
+    res.setHeader("set-cookie", [
+      clearState,
+      sessionCookie(`${SESSION_COOKIE}=${token}; Max-Age=${SESSION_DAYS * 86400}`)
+    ]);
+    sendRedirect(res, "/");
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/auth/me") {
-    sendJson(res, 200, { authenticated: await authenticate(req, dashboardStore) });
+    const token = sessionToken(req);
+    const userId = token ? await dashboardStore.getSessionUser(hashToken(token)) : null;
+    if (!userId) {
+      sendJson(res, 200, { authenticated: false });
+      return;
+    }
+    const user = await dashboardStore.getUserById(userId);
+    if (!user) {
+      sendJson(res, 200, { authenticated: false });
+      return;
+    }
+    sendJson(res, 200, {
+      authenticated: true,
+      user: {
+        id: user.id,
+        discordId: user.discordId,
+        username: user.discordUsername,
+        avatar: user.discordAvatar,
+        plan: user.plan
+      }
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/healthz") {
+    sendJson(res, 200, { ok: true });
     return;
   }
 
   const token = sessionToken(req);
-  if (!token || !(await dashboardStore.validateSession(hashToken(token)))) {
+  const userId = token ? await dashboardStore.getSessionUser(hashToken(token)) : null;
+  if (!token || !userId) {
     throw new HttpError(401, "Authentification requise");
   }
+  const sessionUser = await dashboardStore.getUserById(userId);
+  if (!sessionUser) throw new HttpError(401, "Utilisateur introuvable");
+  const isAdmin = sessionUser.plan === "admin";
+  const requireAdmin = () => {
+    if (!isAdmin) throw new HttpError(403, "Réservé à l'administrateur");
+  };
 
   // Per-session write rate-limit. We key on the session token so an attacker
-  // can't drain the limiter for a legit admin from the same NAT or by spoofing
+  // can't drain the limiter for a legit user from the same NAT or by spoofing
   // x-forwarded-for. Login is excluded (it has its own limiter); reads are
   // unrestricted.
   const isMutation = req.method === "POST" || req.method === "PUT" || req.method === "DELETE" || req.method === "PATCH";
@@ -178,15 +284,18 @@ async function handleApi(
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/bot/scan-now") {
+    requireAdmin();
     const scan = await controller.scanNow();
     sendJson(res, 200, { status: await controller.status(), scan });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/bot/pause") {
+    requireAdmin();
     sendJson(res, 200, { status: await controller.pause() });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/bot/resume") {
+    requireAdmin();
     sendJson(res, 200, { status: await controller.resume() });
     return;
   }
@@ -196,28 +305,31 @@ async function handleApi(
     return;
   }
   if (req.method === "PUT" && url.pathname === "/api/settings") {
+    requireAdmin();
     await dashboardStore.updateSettings(await readJson<DashboardSettingsInput>(req));
     sendJson(res, 200, { settings: await dashboardStore.settingsView(baseConfig) });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/settings/restore-defaults") {
-    await dashboardStore.restoreDefaults(fallbackSearches);
+    await dashboardStore.restoreDefaults(fallbackSearches, userId);
     sendJson(res, 200, {
       settings: await dashboardStore.settingsView(baseConfig),
-      searches: await dashboardStore.listSearches(),
-      modelRules: await dashboardStore.listModelRules(),
-      riskRules: await dashboardStore.getRiskRules()
+      searches: await dashboardStore.listSearches(userId),
+      modelRules: await dashboardStore.listModelRules(userId),
+      riskRules: await dashboardStore.getRiskRules(userId)
     });
     return;
   }
 
   if (url.pathname === "/api/searches") {
     if (req.method === "GET") {
-      sendJson(res, 200, { searches: await dashboardStore.listSearches() });
+      sendJson(res, 200, { searches: await dashboardStore.listSearches(userId) });
       return;
     }
     if (req.method === "POST") {
-      sendJson(res, 201, { search: await dashboardStore.createSearch(await readJson(req), baseConfig.maxProductsPerScan) });
+      sendJson(res, 201, {
+        search: await dashboardStore.createSearch(await readJson(req), baseConfig.maxProductsPerScan, userId)
+      });
       return;
     }
   }
@@ -225,51 +337,107 @@ async function handleApi(
   const searchId = routeId(url.pathname, "/api/searches/");
   if (searchId !== undefined) {
     if (req.method === "PUT") {
-      sendJson(res, 200, { search: await dashboardStore.updateSearch(searchId, await readJson(req), baseConfig.maxProductsPerScan) });
+      sendJson(res, 200, {
+        search: await dashboardStore.updateSearch(searchId, await readJson(req), baseConfig.maxProductsPerScan, userId)
+      });
       return;
     }
     if (req.method === "DELETE") {
-      await dashboardStore.deleteSearch(searchId);
+      await dashboardStore.deleteSearch(searchId, userId);
       sendJson(res, 200, { ok: true });
       return;
     }
   }
 
   if (req.method === "GET" && url.pathname === "/api/model-rules") {
-    sendJson(res, 200, { modelRules: await dashboardStore.listModelRules() });
+    sendJson(res, 200, { modelRules: await dashboardStore.listModelRules(userId) });
     return;
   }
   if (req.method === "PUT" && url.pathname === "/api/model-rules") {
     const body = await readJson<{ modelRules?: unknown } | unknown[]>(req);
     const modelRules = Array.isArray(body) ? body : body.modelRules;
     if (!Array.isArray(modelRules)) throw new HttpError(400, "modelRules doit être un tableau");
-    sendJson(res, 200, { modelRules: await dashboardStore.replaceModelRules(modelRules as ModelRule[]) });
+    sendJson(res, 200, { modelRules: await dashboardStore.replaceModelRules(modelRules as ModelRule[], userId) });
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/risk-rules") {
-    sendJson(res, 200, { riskRules: await dashboardStore.getRiskRules() });
+    sendJson(res, 200, { riskRules: await dashboardStore.getRiskRules(userId) });
     return;
   }
   if (req.method === "PUT" && url.pathname === "/api/risk-rules") {
-    sendJson(res, 200, { riskRules: await dashboardStore.updateRiskRules(await readJson(req)) });
+    sendJson(res, 200, { riskRules: await dashboardStore.updateRiskRules(await readJson(req), userId) });
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/deals") {
-    sendJson(res, 200, { deals: await dashboardStore.listDealCandidates(limitFromUrl(url, 100)) });
+    sendJson(res, 200, { deals: await dashboardStore.listDealCandidates(limitFromUrl(url, 100), userId) });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/scans") {
-    sendJson(res, 200, { scans: await dashboardStore.listScanRuns(limitFromUrl(url, 50)) });
+    sendJson(res, 200, { scans: await dashboardStore.listScanRuns(limitFromUrl(url, 50), userId) });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/logs") {
-    sendJson(res, 200, { logs: await dashboardStore.listLogs(limitFromUrl(url, 100)) });
+    sendJson(res, 200, { logs: await dashboardStore.listLogs(limitFromUrl(url, 100), userId) });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/discord/test") {
+    requireAdmin();
     await controller.testDiscord();
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // --- Per-user routes ---
+  if (req.method === "GET" && url.pathname === "/api/user/settings") {
+    sendJson(res, 200, { settings: await dashboardStore.getUserSettings(userId) });
+    return;
+  }
+  if (req.method === "PUT" && url.pathname === "/api/user/settings") {
+    const body = await readJson<{
+      discordWebhookUrl?: string | null;
+      dryRun?: boolean;
+      pollIntervalSeconds?: number;
+      minDiscountPct?: number | null;
+      maxProductPrice?: number | null;
+    }>(req);
+    if (body.discordWebhookUrl !== undefined) {
+      await dashboardStore.setUserDiscordWebhook(userId, body.discordWebhookUrl);
+    }
+    const settings = await dashboardStore.updateUserSettings(userId, body);
+    sendJson(res, 200, { settings });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/user/webhook/test") {
+    const webhook = await dashboardStore.getDecryptedWebhook(userId);
+    if (!webhook) throw new HttpError(400, "Aucun webhook configuré");
+    let probeResponse: Response;
+    try {
+      probeResponse = await fetch(webhook, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          username: "Bonoitec Flash",
+          content: ":satellite: Test webhook — votre dashboard Bonoitec est bien connecté à Discord."
+        }),
+        // Hard 5s ceiling — Discord normally responds in <200ms; anything past
+        // this is almost always a wrong URL or a transient network issue.
+        signal: AbortSignal.timeout(5000)
+      });
+    } catch (error) {
+      const message = error instanceof Error && error.name === "TimeoutError"
+        ? "Discord n'a pas répondu en 5 s — vérifier l'URL du webhook"
+        : `Réseau : ${error instanceof Error ? error.message : String(error)}`;
+      throw new HttpError(502, message);
+    }
+    if (!probeResponse.ok) {
+      const detail = await probeResponse.text().catch(() => "");
+      throw new HttpError(
+        502,
+        `Discord a refusé le webhook (${probeResponse.status}). ${detail.slice(0, 200)}`
+      );
+    }
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -318,19 +486,23 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-async function authenticate(req: IncomingMessage, store: DashboardStore): Promise<boolean> {
-  const token = sessionToken(req);
-  return Boolean(token && (await store.validateSession(hashToken(token))));
+function sendRedirect(res: ServerResponse, location: string): void {
+  res.writeHead(302, { location, "cache-control": "no-store" });
+  res.end();
 }
 
 function sessionToken(req: IncomingMessage): string | undefined {
+  return readCookie(req, SESSION_COOKIE);
+}
+
+function readCookie(req: IncomingMessage, name: string): string | undefined {
   const cookies = req.headers.cookie?.split(";") ?? [];
   for (const cookie of cookies) {
     const separator = cookie.indexOf("=");
     if (separator === -1) continue;
     const key = cookie.slice(0, separator).trim();
     const value = cookie.slice(separator + 1).trim();
-    if (key === SESSION_COOKIE) return value;
+    if (key === name) return value;
   }
   return undefined;
 }
@@ -342,6 +514,13 @@ function hashToken(token: string): string {
 function sessionCookie(value: string): string {
   const secure = process.env.DASHBOARD_COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
   return `${value}; HttpOnly; SameSite=Lax; Path=/${secure ? "; Secure" : ""}`;
+}
+
+function stateCookie(value: string): string {
+  // Short-lived (10 min), HttpOnly, SameSite=Lax so it survives the Discord
+  // redirect roundtrip. Path=/api/auth keeps it scoped to the OAuth dance.
+  const secure = process.env.DASHBOARD_COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
+  return `${value}; HttpOnly; SameSite=Lax; Path=/api/auth${secure ? "; Secure" : ""}`;
 }
 
 function safePasswordEquals(input: string, expected: string): boolean {

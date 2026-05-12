@@ -149,4 +149,35 @@ export interface DashboardRuntimeSnapshot {
   delivery: AlertDeliveryOptions;
 }
 
+export interface User {
+  id: number;
+  discordId: string;
+  discordUsername: string | null;
+  discordAvatar: string | null;
+  email: string | null;
+  plan: "free" | "pro" | "admin";
+  dailyApifyQuota: number;
+  betaApproved: boolean;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
+
+export interface DiscordProfile {
+  id: string;
+  username: string;
+  global_name?: string | null;
+  avatar?: string | null;
+  email?: string | null;
+}
+
+export interface UserSettings {
+  userId: number;
+  discordWebhookConfigured: boolean;
+  dryRun: boolean;
+  pollIntervalSeconds: number;
+  minDiscountPct: number | null;
+  maxProductPrice: number | null;
+  updatedAt: string;
+}
+
 export type { ModelRule, RiskRules, ScoringOptions };

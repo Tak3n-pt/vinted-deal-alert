@@ -9,10 +9,14 @@ import type {
   DashboardSettingsInput,
   DashboardSettingsView,
   DealCandidateRecord,
+  DiscordProfile,
   ModelRule,
   RiskRules,
-  ScanRunRecord
+  ScanRunRecord,
+  User,
+  UserSettings
 } from "./dashboardTypes.js";
+import { decryptString, encryptString, validateDiscordWebhookUrl } from "./crypto.js";
 
 const DEFAULT_MIN_SCORE = 82;
 const DEFAULT_MIN_DISCOUNT = 0.22;
@@ -84,29 +88,46 @@ export class DashboardStore {
     return store;
   }
 
-  async ensureDefaults(searches: SearchConfig[]): Promise<void> {
-    const searchRow = await this.db.get("select count(*) as count from dashboard_searches");
+  async ensureDefaults(searches: SearchConfig[], userId: number = 1): Promise<void> {
+    const searchRow = await this.db.get("select count(*) as count from dashboard_searches where user_id = ?", [userId]);
     if (Number(searchRow?.count ?? 0) === 0) {
-      for (const search of searches) await this.createSearch(search);
+      for (const search of searches) await this.createSearch(search, undefined, userId);
     }
 
-    const modelRow = await this.db.get("select count(*) as count from dashboard_model_rules");
+    const modelRow = await this.db.get("select count(*) as count from dashboard_model_rules where user_id = ?", [userId]);
     if (Number(modelRow?.count ?? 0) === 0) {
-      await this.replaceModelRules(DEFAULT_MODEL_RULES);
+      await this.replaceModelRules(DEFAULT_MODEL_RULES, userId);
     } else {
-      await this.ensureMissingModelRules();
+      await this.ensureMissingModelRules(userId);
     }
 
-    const riskRow = await this.db.get("select count(*) as count from dashboard_risk_rules");
+    const riskRow = await this.db.get("select count(*) as count from user_risk_rules where user_id = ?", [userId]);
     if (Number(riskRow?.count ?? 0) === 0) {
-      await this.updateRiskRules(DEFAULT_RISK_RULES);
+      await this.updateRiskRules(DEFAULT_RISK_RULES, userId);
     }
   }
 
-  async restoreDefaults(searches: SearchConfig[]): Promise<void> {
-    await this.db.exec("delete from dashboard_searches; delete from dashboard_model_rules; delete from dashboard_risk_rules;");
-    await this.ensureDefaults(searches);
-    await this.log("info", "Règles restaurées par défaut");
+  async restoreDefaults(searches: SearchConfig[], userId: number = 1): Promise<void> {
+    await this.db.run("delete from dashboard_searches where user_id = ?", [userId]);
+    await this.db.run("delete from dashboard_model_rules where user_id = ?", [userId]);
+    await this.db.run("delete from user_risk_rules where user_id = ?", [userId]);
+    await this.ensureDefaults(searches, userId);
+    await this.log("info", "Règles restaurées par défaut", userId);
+  }
+
+  /**
+   * Seed model rules + risk rules for a freshly-onboarded user. Idempotent.
+   * Searches are intentionally left empty so users add their own.
+   */
+  async seedNewUserDefaults(userId: number): Promise<void> {
+    const modelRow = await this.db.get("select count(*) as count from dashboard_model_rules where user_id = ?", [userId]);
+    if (Number(modelRow?.count ?? 0) === 0) {
+      await this.replaceModelRules(DEFAULT_MODEL_RULES, userId);
+    }
+    const riskRow = await this.db.get("select count(*) as count from user_risk_rules where user_id = ?", [userId]);
+    if (Number(riskRow?.count ?? 0) === 0) {
+      await this.updateRiskRules(DEFAULT_RISK_RULES, userId);
+    }
   }
 
   async settingsView(baseConfig: RuntimeConfig): Promise<DashboardSettingsView> {
@@ -184,7 +205,11 @@ export class DashboardStore {
     return secrets;
   }
 
-  async runtimeSnapshot(baseConfig: RuntimeConfig, fallbackSearches: SearchConfig[]): Promise<DashboardRuntimeSnapshot> {
+  async runtimeSnapshot(
+    baseConfig: RuntimeConfig,
+    fallbackSearches: SearchConfig[],
+    userId: number = 1
+  ): Promise<DashboardRuntimeSnapshot> {
     const view = await this.settingsView(baseConfig);
     const secrets = await this.secrets();
     const config: RuntimeConfig = {
@@ -204,17 +229,41 @@ export class DashboardStore {
     const apifyToken = secrets.apifyToken ?? baseConfig.apifyToken;
     if (apifyToken) config.apifyToken = apifyToken;
 
-    const configuredSearches = await this.activeSearches();
-    const searches = configuredSearches.length > 0 ? configuredSearches : fallbackSearches;
+    const configuredSearches = await this.activeSearches(userId);
+    // Fallback searches only kick in for the seed admin (user_id=1). New users
+    // start with an empty list and must add their own — fallback would be
+    // confusing.
+    const searches = configuredSearches.length > 0
+      ? configuredSearches
+      : (userId === 1 ? fallbackSearches : []);
+    // Per-user overrides on top of admin's global thresholds. Stored in
+    // user_settings as percent (0..100); scoring expects a 0..1 fraction.
+    // If null, falls back to the global value — admins can set a baseline
+    // and users opt into stricter thresholds.
+    const userSettings = await this.getUserSettings(userId);
+    const effectiveMinDiscount = userSettings.minDiscountPct != null
+      ? userSettings.minDiscountPct / 100
+      : view.minDiscount;
+    const modelRulesForUser = await this.listModelRules(userId);
+    // Per-user max_product_price acts as a hard ceiling. Apply it on top of
+    // each model's existing maxFinalPrice — take the more restrictive of the
+    // two so a user's cap can only tighten, never relax, a model rule.
+    const userMax = userSettings.maxProductPrice;
+    const modelRulesScoped = userMax != null
+      ? modelRulesForUser.map((rule) => ({
+          ...rule,
+          maxFinalPrice: rule.maxFinalPrice != null ? Math.min(rule.maxFinalPrice, userMax) : userMax
+        }))
+      : modelRulesForUser;
     return {
       config,
       searches,
       scoringOptions: {
         minScore: view.minScore,
-        minDiscount: view.minDiscount,
+        minDiscount: effectiveMinDiscount,
         minSavings: view.minSavings,
-        modelRules: await this.listModelRules(),
-        riskRules: await this.getRiskRules()
+        modelRules: modelRulesScoped,
+        riskRules: await this.getRiskRules(userId)
       },
       delivery: {
         reAlertDropPercent: view.reAlertDropPercent,
@@ -227,12 +276,68 @@ export class DashboardStore {
     };
   }
 
-  async listSearches(): Promise<DashboardSearch[]> {
-    return (await this.db.all("select * from dashboard_searches order by id asc")).map(searchFromRow);
+  /**
+   * Active users for the bot loop. Includes:
+   * - admin-plan users (always active)
+   * - beta_approved users with a configured webhook
+   */
+  async listActiveUsers(): Promise<User[]> {
+    const rows = await this.db.all(`
+      select u.* from users u
+      inner join user_settings s on s.user_id = u.id
+      where (u.plan = 'admin' or u.beta_approved = 1)
+        and (s.discord_webhook_configured = 1 or u.id = 1)
+      order by u.id asc
+    `);
+    return rows.map(userFromRow);
   }
 
-  async activeSearches(): Promise<SearchConfig[]> {
-    return (await this.listSearches())
+  /**
+   * Increment today's usage counter for a user. Upserts a row keyed on
+   * (user_id, day) so the first call of the day inserts and subsequent calls
+   * add to the running total.
+   */
+  async recordUsage(userId: number, productsFetched: number, scansRun: number = 1): Promise<void> {
+    if (this.db.dialect === "postgres") {
+      await this.db.run(
+        `insert into usage_log (user_id, day, products_fetched, scans_run)
+         values (?, current_date, ?, ?)
+         on conflict (user_id, day) do update set
+           products_fetched = usage_log.products_fetched + excluded.products_fetched,
+           scans_run = usage_log.scans_run + excluded.scans_run`,
+        [userId, productsFetched, scansRun]
+      );
+    } else {
+      await this.db.run(
+        `insert into usage_log (user_id, day, products_fetched, scans_run)
+         values (?, date('now'), ?, ?)
+         on conflict(user_id, day) do update set
+           products_fetched = usage_log.products_fetched + excluded.products_fetched,
+           scans_run = usage_log.scans_run + excluded.scans_run`,
+        [userId, productsFetched, scansRun]
+      );
+    }
+  }
+
+  /** Products fetched today for a user. 0 if no row yet. */
+  async getDailyUsage(userId: number): Promise<number> {
+    const today = this.db.dialect === "postgres" ? "current_date" : "date('now')";
+    const row = await this.db.get(
+      `select products_fetched from usage_log where user_id = ? and day = ${today}`,
+      [userId]
+    );
+    return row ? Number(row.products_fetched ?? 0) : 0;
+  }
+
+  async listSearches(userId: number = 1): Promise<DashboardSearch[]> {
+    return (await this.db.all(
+      "select * from dashboard_searches where user_id = ? order by id asc",
+      [userId]
+    )).map(searchFromRow);
+  }
+
+  async activeSearches(userId: number = 1): Promise<SearchConfig[]> {
+    return (await this.listSearches(userId))
       .filter((search) => search.enabled)
       .map((search) => ({
         market: search.market,
@@ -243,31 +348,31 @@ export class DashboardStore {
       }));
   }
 
-  async createSearch(input: DashboardSearchInput, fallbackCap?: number): Promise<DashboardSearch> {
+  async createSearch(input: DashboardSearchInput, fallbackCap?: number, userId: number = 1): Promise<DashboardSearch> {
     const normalized = normalizeSearch(input);
-    await this.assertSearchBudget(undefined, normalized, fallbackCap);
+    await this.assertSearchBudget(undefined, normalized, fallbackCap, userId);
     const id = await this.db.insert(
       `insert into dashboard_searches
-        (enabled, query, url, market, search_limit, sort, created_at, updated_at)
-       values (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-      [normalized.enabled ? 1 : 0, normalized.query, normalized.url ?? null, normalized.market, normalized.limit, normalized.sort]
+        (enabled, query, url, market, search_limit, sort, created_at, updated_at, user_id)
+       values (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)`,
+      [normalized.enabled ? 1 : 0, normalized.query, normalized.url ?? null, normalized.market, normalized.limit, normalized.sort, userId]
     );
-    await this.log("info", `Recherche créée : ${normalized.query || normalized.url || "url"}`);
-    return this.getSearch(id);
+    await this.log("info", `Recherche créée : ${normalized.query || normalized.url || "url"}`, userId);
+    return this.getSearch(id, userId);
   }
 
-  async updateSearch(id: number, input: DashboardSearchInput, fallbackCap?: number): Promise<DashboardSearch> {
-    const existing = await this.getSearch(id);
+  async updateSearch(id: number, input: DashboardSearchInput, fallbackCap?: number, userId: number = 1): Promise<DashboardSearch> {
+    const existing = await this.getSearch(id, userId);
     const normalized = normalizeSearch({ ...existing, ...input });
-    await this.assertSearchBudget(id, normalized, fallbackCap);
+    await this.assertSearchBudget(id, normalized, fallbackCap, userId);
     await this.db.run(
       `update dashboard_searches
        set enabled = ?, query = ?, url = ?, market = ?, search_limit = ?, sort = ?, updated_at = CURRENT_TIMESTAMP
-       where id = ?`,
-      [normalized.enabled ? 1 : 0, normalized.query, normalized.url ?? null, normalized.market, normalized.limit, normalized.sort, id]
+       where id = ? and user_id = ?`,
+      [normalized.enabled ? 1 : 0, normalized.query, normalized.url ?? null, normalized.market, normalized.limit, normalized.sort, id, userId]
     );
-    await this.log("info", `Recherche mise à jour : ${normalized.query || normalized.url || "url"}`);
-    return this.getSearch(id);
+    await this.log("info", `Recherche mise à jour : ${normalized.query || normalized.url || "url"}`, userId);
+    return this.getSearch(id, userId);
   }
 
   /**
@@ -283,7 +388,8 @@ export class DashboardStore {
   private async assertSearchBudget(
     updatingId: number | undefined,
     candidate: Required<DashboardSearchInput>,
-    fallbackCap: number | undefined
+    fallbackCap: number | undefined,
+    userId: number = 1
   ): Promise<void> {
     if (!candidate.enabled) return;
     const row = await this.db.get("select value from dashboard_settings where key = 'maxProductsPerScan'");
@@ -292,9 +398,9 @@ export class DashboardStore {
     if (!Number.isFinite(cap) || cap <= 0) return;
     const others = await this.db.all(
       updatingId === undefined
-        ? "select search_limit from dashboard_searches where enabled = 1"
-        : "select search_limit from dashboard_searches where enabled = 1 and id <> ?",
-      updatingId === undefined ? [] : [updatingId]
+        ? "select search_limit from dashboard_searches where enabled = 1 and user_id = ?"
+        : "select search_limit from dashboard_searches where enabled = 1 and user_id = ? and id <> ?",
+      updatingId === undefined ? [userId] : [userId, updatingId]
     );
     const total = others.reduce((sum, r) => sum + Number(r.search_limit ?? 0), 0) + candidate.limit;
     if (total > cap) {
@@ -305,42 +411,45 @@ export class DashboardStore {
     }
   }
 
-  async deleteSearch(id: number): Promise<void> {
-    const result = await this.db.run("delete from dashboard_searches where id = ?", [id]);
+  async deleteSearch(id: number, userId: number = 1): Promise<void> {
+    const result = await this.db.run("delete from dashboard_searches where id = ? and user_id = ?", [id, userId]);
     if (result.changes === 0) throw new Error("Search not found");
-    await this.log("warn", `Recherche supprimée : ${id}`);
+    await this.log("warn", `Recherche supprimée : ${id}`, userId);
   }
 
-  async listModelRules(): Promise<ModelRule[]> {
-    return (await this.db.all("select * from dashboard_model_rules order by model asc")).map(modelRuleFromRow);
+  async listModelRules(userId: number = 1): Promise<ModelRule[]> {
+    return (await this.db.all(
+      "select * from dashboard_model_rules where user_id = ? order by model asc",
+      [userId]
+    )).map(modelRuleFromRow);
   }
 
-  async replaceModelRules(rules: ModelRule[]): Promise<ModelRule[]> {
+  async replaceModelRules(rules: ModelRule[], userId: number = 1): Promise<ModelRule[]> {
     await this.db.transaction(async () => {
-      await this.db.run("delete from dashboard_model_rules");
+      await this.db.run("delete from dashboard_model_rules where user_id = ?", [userId]);
       for (const rule of rules) {
-        await this.insertModelRule(normalizeModelRule(rule));
+        await this.insertModelRule(normalizeModelRule(rule), userId);
       }
     });
-    await this.log("info", "Règles des modèles mises à jour");
-    return this.listModelRules();
+    await this.log("info", "Règles des modèles mises à jour", userId);
+    return this.listModelRules(userId);
   }
 
-  async getRiskRules(): Promise<RiskRules> {
-    const row = await this.db.get("select * from dashboard_risk_rules where id = 1");
+  async getRiskRules(userId: number = 1): Promise<RiskRules> {
+    const row = await this.db.get("select * from user_risk_rules where user_id = ?", [userId]);
     return row ? riskRulesFromRow(row) : { ...DEFAULT_RISK_RULES };
   }
 
-  async updateRiskRules(input: Partial<RiskRules>): Promise<RiskRules> {
-    const current = await this.getRiskRules();
+  async updateRiskRules(input: Partial<RiskRules>, userId: number = 1): Promise<RiskRules> {
+    const current = await this.getRiskRules(userId);
     const normalized = normalizeRiskRules({ ...current, ...input });
     await this.db.run(
-      `insert into dashboard_risk_rules
-        (id, reject_high_risks, allow_missing_image, reject_non_original_screen, reject_screen_replaced,
+      `insert into user_risk_rules
+        (user_id, reject_high_risks, allow_missing_image, reject_non_original_screen, reject_screen_replaced,
          reject_missing_invoice, min_seller_reviews, min_seller_rating, min_battery_health,
          allowed_countries_json, custom_exclude_keywords_json, custom_exclude_severity, updated_at)
-       values (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-       on conflict(id) do update set
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       on conflict(user_id) do update set
          reject_high_risks = excluded.reject_high_risks,
          allow_missing_image = excluded.allow_missing_image,
          reject_non_original_screen = excluded.reject_non_original_screen,
@@ -354,6 +463,7 @@ export class DashboardStore {
          custom_exclude_severity = excluded.custom_exclude_severity,
          updated_at = CURRENT_TIMESTAMP`,
       [
+        userId,
         normalized.rejectHighRisks ? 1 : 0,
         normalized.allowMissingImage ? 1 : 0,
         normalized.rejectNonOriginalScreen ? 1 : 0,
@@ -367,16 +477,16 @@ export class DashboardStore {
         normalized.customExcludeSeverity
       ]
     );
-    await this.log("info", "Règles de risque mises à jour");
-    return this.getRiskRules();
+    await this.log("info", "Règles de risque mises à jour", userId);
+    return this.getRiskRules(userId);
   }
 
-  async startScanRun(source: ScanRunRecord["source"], searchCount: number): Promise<number> {
+  async startScanRun(source: ScanRunRecord["source"], searchCount: number, userId: number = 1): Promise<number> {
     return this.db.insert(
       `insert into scan_runs
-        (source, status, started_at, search_count, listings, scored, alertable, sent, best_candidate)
-       values (?, 'running', CURRENT_TIMESTAMP, ?, 0, 0, 0, 0, '')`,
-      [source, searchCount]
+        (source, status, started_at, search_count, listings, scored, alertable, sent, best_candidate, user_id)
+       values (?, 'running', CURRENT_TIMESTAMP, ?, 0, 0, 0, 0, '', ?)`,
+      [source, searchCount, userId]
     );
   }
 
@@ -384,19 +494,24 @@ export class DashboardStore {
     id: number,
     status: ScanRunRecord["status"],
     result: { listings: number; scored: number; alertable: number; sent: number; bestCandidate: string },
-    error?: string
+    error?: string,
+    userId: number = 1
   ): Promise<void> {
     await this.db.run(
       `update scan_runs
        set status = ?, finished_at = CURRENT_TIMESTAMP, listings = ?, scored = ?, alertable = ?,
            sent = ?, best_candidate = ?, error = ?
-       where id = ?`,
-      [status, result.listings, result.scored, result.alertable, result.sent, result.bestCandidate, error ?? null, id]
+       where id = ? and user_id = ?`,
+      [status, result.listings, result.scored, result.alertable, result.sent, result.bestCandidate, error ?? null, id, userId]
     );
-    await this.log(status === "failed" ? "error" : "info", `Scan ${status === "failed" ? "échoué" : "réussi"} : ${result.listings} annonces, ${result.sent} alertes envoyées`);
+    await this.log(
+      status === "failed" ? "error" : "info",
+      `Scan ${status === "failed" ? "échoué" : "réussi"} : ${result.listings} annonces, ${result.sent} alertes envoyées`,
+      userId
+    );
   }
 
-  async recordDealCandidates(scanRunId: number | undefined, deals: ScoredDeal[], sentIds: Set<string>): Promise<void> {
+  async recordDealCandidates(scanRunId: number | undefined, deals: ScoredDeal[], sentIds: Set<string>, userId: number = 1): Promise<void> {
     if (deals.length === 0) return;
     await this.db.transaction(async () => {
       for (const deal of deals) {
@@ -404,8 +519,8 @@ export class DashboardStore {
           `insert into deal_candidates
             (scan_run_id, listing_id, title, model, storage_gb, final_price, benchmark_price,
              discount_percent, savings, score, should_alert, sent, url, image_url, seller_name,
-             risk_level, risks_json, reasons_json, rejection_reasons_json, created_at)
-           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+             risk_level, risks_json, reasons_json, rejection_reasons_json, created_at, user_id)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
           [
             scanRunId ?? null,
             deal.listing.id,
@@ -425,7 +540,8 @@ export class DashboardStore {
             riskLevel(deal),
             JSON.stringify(deal.risks),
             JSON.stringify(deal.reasons),
-            JSON.stringify(deal.rejectionReasons)
+            JSON.stringify(deal.rejectionReasons),
+            userId
           ]
         );
       }
@@ -458,24 +574,39 @@ export class DashboardStore {
     );
   }
 
-  async listScanRuns(limit = 50): Promise<ScanRunRecord[]> {
-    return (await this.db.all("select * from scan_runs order by id desc limit ?", [clampInt(limit, 1, 200, "limit")])).map(scanRunFromRow);
+  async listScanRuns(limit = 50, userId: number = 1): Promise<ScanRunRecord[]> {
+    return (await this.db.all(
+      "select * from scan_runs where user_id = ? order by id desc limit ?",
+      [userId, clampInt(limit, 1, 200, "limit")]
+    )).map(scanRunFromRow);
   }
 
-  async listDealCandidates(limit = 100): Promise<DealCandidateRecord[]> {
-    return (await this.db.all("select * from deal_candidates order by id desc limit ?", [clampInt(limit, 1, 300, "limit")])).map(dealCandidateFromRow);
+  async listDealCandidates(limit = 100, userId: number = 1): Promise<DealCandidateRecord[]> {
+    return (await this.db.all(
+      "select * from deal_candidates where user_id = ? order by id desc limit ?",
+      [userId, clampInt(limit, 1, 300, "limit")]
+    )).map(dealCandidateFromRow);
   }
 
-  async listLogs(limit = 100): Promise<DashboardLogRecord[]> {
-    return (await this.db.all("select * from dashboard_logs order by id desc limit ?", [clampInt(limit, 1, 300, "limit")])).map(logFromRow);
+  async listLogs(limit = 100, userId: number = 1): Promise<DashboardLogRecord[]> {
+    return (await this.db.all(
+      "select * from dashboard_logs where user_id = ? order by id desc limit ?",
+      [userId, clampInt(limit, 1, 300, "limit")]
+    )).map(logFromRow);
   }
 
-  async log(level: DashboardLogRecord["level"], message: string): Promise<void> {
-    await this.db.run("insert into dashboard_logs (level, message, created_at) values (?, ?, CURRENT_TIMESTAMP)", [level, message]);
+  async log(level: DashboardLogRecord["level"], message: string, userId: number = 1): Promise<void> {
+    await this.db.run(
+      "insert into dashboard_logs (level, message, created_at, user_id) values (?, ?, CURRENT_TIMESTAMP, ?)",
+      [level, message, userId]
+    );
   }
 
-  async createSession(tokenHash: string, expiresAt: string): Promise<void> {
-    await this.db.run("insert into admin_sessions (token_hash, expires_at, created_at) values (?, ?, CURRENT_TIMESTAMP)", [tokenHash, expiresAt]);
+  async createSession(tokenHash: string, expiresAt: string, userId: number = 1): Promise<void> {
+    await this.db.run(
+      "insert into admin_sessions (token_hash, expires_at, created_at, user_id) values (?, ?, CURRENT_TIMESTAMP, ?)",
+      [tokenHash, expiresAt, userId]
+    );
   }
 
   async validateSession(tokenHash: string): Promise<boolean> {
@@ -485,38 +616,202 @@ export class DashboardStore {
     return Boolean(row);
   }
 
+  /**
+   * Return the user_id bound to a session token (after cleaning expired
+   * sessions). Returns null if no valid session.
+   */
+  async getSessionUser(tokenHash: string): Promise<number | null> {
+    const expirationSql = this.db.dialect === "postgres" ? "expires_at <= CURRENT_TIMESTAMP" : "expires_at <= datetime('now')";
+    await this.db.run(`delete from admin_sessions where ${expirationSql}`);
+    const row = await this.db.get("select user_id from admin_sessions where token_hash = ?", [tokenHash]);
+    if (!row) return null;
+    const value = Number(row.user_id);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
   async deleteSession(tokenHash: string): Promise<void> {
     await this.db.run("delete from admin_sessions where token_hash = ?", [tokenHash]);
+  }
+
+  /**
+   * Insert or update a user from a fresh Discord profile. Returns the row.
+   * The unique key is `discord_id` (Discord snowflake). On update, refreshes
+   * username, avatar, email, and last_login_at.
+   */
+  async upsertUserFromDiscord(profile: DiscordProfile): Promise<User> {
+    const username = profile.global_name?.trim() || profile.username || null;
+    const avatar = profile.avatar ?? null;
+    const email = profile.email ?? null;
+    if (this.db.dialect === "postgres") {
+      await this.db.run(
+        `insert into users (discord_id, discord_username, discord_avatar, email, last_login_at)
+         values (?, ?, ?, ?, now())
+         on conflict (discord_id) do update set
+           discord_username = excluded.discord_username,
+           discord_avatar = excluded.discord_avatar,
+           email = excluded.email,
+           last_login_at = now()`,
+        [profile.id, username, avatar, email]
+      );
+    } else {
+      await this.db.run(
+        `insert into users (discord_id, discord_username, discord_avatar, email, last_login_at)
+         values (?, ?, ?, ?, CURRENT_TIMESTAMP)
+         on conflict (discord_id) do update set
+           discord_username = excluded.discord_username,
+           discord_avatar = excluded.discord_avatar,
+           email = excluded.email,
+           last_login_at = CURRENT_TIMESTAMP`,
+        [profile.id, username, avatar, email]
+      );
+    }
+    const row = await this.db.get("select * from users where discord_id = ?", [profile.id]);
+    if (!row) throw new Error("upsertUserFromDiscord: user row missing after upsert");
+    const userId = Number(row.id);
+    // Ensure user_settings row exists for this user
+    await this.db.run(
+      this.db.dialect === "postgres"
+        ? "insert into user_settings (user_id) values (?) on conflict (user_id) do nothing"
+        : "insert or ignore into user_settings (user_id) values (?)",
+      [userId]
+    );
+    // Seed model rules + risk rules for first-time OAuth users (idempotent).
+    // Skip for the seed admin (id=1) which is bootstrapped via ensureDefaults.
+    if (userId !== 1) await this.seedNewUserDefaults(userId);
+    return userFromRow(row);
+  }
+
+  async getUserById(id: number): Promise<User | null> {
+    const row = await this.db.get("select * from users where id = ?", [id]);
+    return row ? userFromRow(row) : null;
+  }
+
+  async getUserByDiscordId(discordId: string): Promise<User | null> {
+    const row = await this.db.get("select * from users where discord_id = ?", [discordId]);
+    return row ? userFromRow(row) : null;
+  }
+
+  async setUserBetaApproved(id: number, approved: boolean): Promise<void> {
+    await this.db.run("update users set beta_approved = ? where id = ?", [approved ? 1 : 0, id]);
+  }
+
+  /**
+   * Per-user settings (webhook, dry_run, custom thresholds). Returns
+   * `discordWebhookConfigured` as a boolean — the actual URL is never sent to
+   * the client. To use the webhook from the bot loop, call `getDecryptedWebhook`.
+   */
+  async getUserSettings(userId: number): Promise<UserSettings> {
+    const row = await this.db.get("select * from user_settings where user_id = ?", [userId]);
+    if (!row) {
+      // Defensive: ensure a row exists (upsertUserFromDiscord creates one,
+      // but the seed admin path doesn't always go through that).
+      await this.db.run(
+        this.db.dialect === "postgres"
+          ? "insert into user_settings (user_id) values (?) on conflict (user_id) do nothing"
+          : "insert or ignore into user_settings (user_id) values (?)",
+        [userId]
+      );
+      return this.getUserSettings(userId);
+    }
+    return userSettingsFromRow(row);
+  }
+
+  /**
+   * Internal use only — for the bot loop and the webhook-test route. Returns
+   * the plaintext webhook URL, or null if the user hasn't configured one.
+   */
+  async getDecryptedWebhook(userId: number): Promise<string | null> {
+    const row = await this.db.get(
+      "select discord_webhook_enc from user_settings where user_id = ?",
+      [userId]
+    );
+    if (!row || !row.discord_webhook_enc) return null;
+    try {
+      return decryptString(String(row.discord_webhook_enc));
+    } catch (error) {
+      await this.log("error", `Webhook déchiffrement échoué : ${messageFromError(error)}`, userId);
+      return null;
+    }
+  }
+
+  async setUserDiscordWebhook(userId: number, url: string | null): Promise<void> {
+    if (url === null || url === "") {
+      await this.db.run(
+        "update user_settings set discord_webhook_enc = null, discord_webhook_configured = 0, updated_at = CURRENT_TIMESTAMP where user_id = ?",
+        [userId]
+      );
+      await this.log("info", "Webhook Discord retiré", userId);
+      return;
+    }
+    const validated = validateDiscordWebhookUrl(url);
+    const enc = encryptString(validated);
+    await this.db.run(
+      "update user_settings set discord_webhook_enc = ?, discord_webhook_configured = 1, updated_at = CURRENT_TIMESTAMP where user_id = ?",
+      [enc, userId]
+    );
+    await this.log("info", "Webhook Discord configuré", userId);
+  }
+
+  async updateUserSettings(
+    userId: number,
+    input: { dryRun?: boolean; pollIntervalSeconds?: number; minDiscountPct?: number | null; maxProductPrice?: number | null }
+  ): Promise<UserSettings> {
+    await this.getUserSettings(userId); // ensure row exists
+    const updates: string[] = [];
+    const params: unknown[] = [];
+    if (input.dryRun !== undefined) {
+      updates.push("dry_run = ?");
+      params.push(input.dryRun ? 1 : 0);
+    }
+    if (input.pollIntervalSeconds !== undefined) {
+      updates.push("poll_interval_seconds = ?");
+      params.push(clampInt(input.pollIntervalSeconds, 60, 86400, "pollIntervalSeconds"));
+    }
+    if (input.minDiscountPct !== undefined) {
+      updates.push("min_discount_pct = ?");
+      params.push(input.minDiscountPct === null ? null : clampNumber(input.minDiscountPct, 0, 100, "minDiscountPct"));
+    }
+    if (input.maxProductPrice !== undefined) {
+      updates.push("max_product_price = ?");
+      params.push(input.maxProductPrice === null ? null : nonNegativeNumber(input.maxProductPrice, "maxProductPrice"));
+    }
+    if (updates.length) {
+      updates.push("updated_at = CURRENT_TIMESTAMP");
+      params.push(userId);
+      await this.db.run(`update user_settings set ${updates.join(", ")} where user_id = ?`, params);
+    }
+    return this.getUserSettings(userId);
   }
 
   async close(): Promise<void> {
     await this.db.close();
   }
 
-  private async getSearch(id: number): Promise<DashboardSearch> {
-    const row = await this.db.get("select * from dashboard_searches where id = ?", [id]);
+  private async getSearch(id: number, userId: number = 1): Promise<DashboardSearch> {
+    const row = await this.db.get("select * from dashboard_searches where id = ? and user_id = ?", [id, userId]);
     if (!row) throw new Error("Search not found");
     return searchFromRow(row);
   }
 
-  private async ensureMissingModelRules(): Promise<void> {
-    const rows = await this.db.all("select model from dashboard_model_rules");
+  private async ensureMissingModelRules(userId: number = 1): Promise<void> {
+    const rows = await this.db.all("select model from dashboard_model_rules where user_id = ?", [userId]);
     const existing = new Set(rows.map((row) => String(row.model)));
     let inserted = 0;
     for (const rule of DEFAULT_MODEL_RULES) {
       if (existing.has(rule.model)) continue;
-      await this.insertModelRule(normalizeModelRule(rule));
+      await this.insertModelRule(normalizeModelRule(rule), userId);
       inserted += 1;
     }
-    if (inserted > 0) await this.log("info", `${inserted} nouveaux modèles ajoutés aux règles`);
+    if (inserted > 0) await this.log("info", `${inserted} nouveaux modèles ajoutés aux règles`, userId);
   }
 
-  private async insertModelRule(normalized: ModelRule): Promise<void> {
+  private async insertModelRule(normalized: ModelRule, userId: number = 1): Promise<void> {
     await this.db.run(
       `insert into dashboard_model_rules
-        (model, enabled, storages_json, max_final_price, min_score, min_discount, min_savings, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+        (user_id, model, enabled, storages_json, max_final_price, min_score, min_discount, min_savings, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       [
+        userId,
         normalized.model,
         normalized.enabled ? 1 : 0,
         JSON.stringify(normalized.storagesGb),
@@ -690,6 +985,7 @@ export class DashboardStore {
       // custom-keyword exclude feature.
       await this.addColumnIfMissing("dashboard_risk_rules", "custom_exclude_keywords_json", "text not null default '[]'");
       await this.addColumnIfMissing("dashboard_risk_rules", "custom_exclude_severity", "text not null default 'reject'");
+      await this.applyMultiTenantSchema();
       return;
     }
 
@@ -799,6 +1095,220 @@ export class DashboardStore {
     // custom-keyword exclude feature.
     await this.addColumnIfMissing("dashboard_risk_rules", "custom_exclude_keywords_json", "text not null default '[]'");
     await this.addColumnIfMissing("dashboard_risk_rules", "custom_exclude_severity", "text not null default 'reject'");
+    await this.applyMultiTenantSchema();
+  }
+
+  /**
+   * Multi-tenant schema layer. Adds per-user tables (users, user_settings,
+   * user_risk_rules, usage_log) and a `user_id` column on every existing data
+   * table. Every existing row backfills to the seed admin (user_id = 1) so the
+   * single-tenant dashboard keeps working through the new code path.
+   *
+   * The dashboard_model_rules primary key changes from `(model)` to
+   * `(user_id, model)` so two users can pick the same model. That step is
+   * guarded by a one-shot flag in dashboard_settings since dropping a PK is
+   * destructive.
+   *
+   * All other operations are idempotent (`create table if not exists`,
+   * `addColumnIfMissing`, `insert ... on conflict do nothing`).
+   */
+  private async applyMultiTenantSchema(): Promise<void> {
+    if (this.db.dialect === "postgres") {
+      await this.db.exec(`
+        create table if not exists users (
+          id bigint generated by default as identity primary key,
+          discord_id text not null unique,
+          discord_username text,
+          discord_avatar text,
+          email text,
+          plan text not null default 'free' check (plan in ('free','pro','admin')),
+          daily_apify_quota integer not null default 30,
+          beta_approved integer not null default 0,
+          created_at timestamptz not null default now(),
+          last_login_at timestamptz
+        );
+
+        insert into users (id, discord_id, discord_username, plan, daily_apify_quota, beta_approved)
+        values (1, 'system', 'system-admin', 'admin', 99999, 1)
+        on conflict (discord_id) do nothing;
+
+        -- Advance the identity sequence past the seeded id=1. Without this, the
+        -- next OAuth signup would request nextval=1 and hit a PK collision —
+        -- 'generated by default as identity' does NOT auto-advance when you
+        -- insert an explicit value. Idempotent: always sets to max(id) or 1.
+        select setval(pg_get_serial_sequence('users', 'id'), greatest(1, (select max(id) from users)));
+
+        create table if not exists user_settings (
+          user_id bigint primary key references users(id) on delete cascade,
+          discord_webhook_enc text,
+          discord_webhook_configured integer not null default 0,
+          dry_run integer not null default 0,
+          poll_interval_seconds integer not null default 900,
+          min_discount_pct real,
+          max_product_price real,
+          updated_at timestamptz not null default now()
+        );
+
+        insert into user_settings (user_id) values (1)
+        on conflict (user_id) do nothing;
+
+        create table if not exists user_risk_rules (
+          user_id bigint primary key references users(id) on delete cascade,
+          reject_high_risks integer not null default 1,
+          allow_missing_image integer not null default 0,
+          reject_non_original_screen integer not null default 1,
+          reject_screen_replaced integer not null default 0,
+          reject_missing_invoice integer not null default 0,
+          min_seller_reviews integer not null default 0,
+          min_seller_rating real not null default 0,
+          min_battery_health integer not null default 80,
+          allowed_countries_json text not null default '[]',
+          custom_exclude_keywords_json text not null default '[]',
+          custom_exclude_severity text not null default 'reject',
+          updated_at timestamptz not null default now()
+        );
+
+        insert into user_risk_rules (user_id, reject_high_risks, allow_missing_image,
+          reject_non_original_screen, reject_screen_replaced, reject_missing_invoice,
+          min_seller_reviews, min_seller_rating, min_battery_health,
+          allowed_countries_json, custom_exclude_keywords_json, custom_exclude_severity, updated_at)
+        select 1, reject_high_risks, allow_missing_image, reject_non_original_screen,
+          reject_screen_replaced, reject_missing_invoice, min_seller_reviews, min_seller_rating,
+          min_battery_health, allowed_countries_json, custom_exclude_keywords_json,
+          custom_exclude_severity, updated_at
+        from dashboard_risk_rules where id = 1
+        on conflict (user_id) do nothing;
+
+        create table if not exists usage_log (
+          user_id bigint not null references users(id) on delete cascade,
+          day date not null,
+          products_fetched integer not null default 0,
+          scans_run integer not null default 0,
+          primary key (user_id, day)
+        );
+
+        create index if not exists idx_usage_log_day on usage_log (day);
+      `);
+    } else {
+      await this.db.exec(`
+        create table if not exists users (
+          id integer primary key autoincrement,
+          discord_id text not null unique,
+          discord_username text,
+          discord_avatar text,
+          email text,
+          plan text not null default 'free' check (plan in ('free','pro','admin')),
+          daily_apify_quota integer not null default 30,
+          beta_approved integer not null default 0,
+          created_at text not null default CURRENT_TIMESTAMP,
+          last_login_at text
+        );
+
+        insert or ignore into users (id, discord_id, discord_username, plan, daily_apify_quota, beta_approved, created_at)
+        values (1, 'system', 'system-admin', 'admin', 99999, 1, CURRENT_TIMESTAMP);
+
+        create table if not exists user_settings (
+          user_id integer primary key references users(id) on delete cascade,
+          discord_webhook_enc text,
+          discord_webhook_configured integer not null default 0,
+          dry_run integer not null default 0,
+          poll_interval_seconds integer not null default 900,
+          min_discount_pct real,
+          max_product_price real,
+          updated_at text not null default CURRENT_TIMESTAMP
+        );
+
+        insert or ignore into user_settings (user_id) values (1);
+
+        create table if not exists user_risk_rules (
+          user_id integer primary key references users(id) on delete cascade,
+          reject_high_risks integer not null default 1,
+          allow_missing_image integer not null default 0,
+          reject_non_original_screen integer not null default 1,
+          reject_screen_replaced integer not null default 0,
+          reject_missing_invoice integer not null default 0,
+          min_seller_reviews integer not null default 0,
+          min_seller_rating real not null default 0,
+          min_battery_health integer not null default 80,
+          allowed_countries_json text not null default '[]',
+          custom_exclude_keywords_json text not null default '[]',
+          custom_exclude_severity text not null default 'reject',
+          updated_at text not null default CURRENT_TIMESTAMP
+        );
+
+        insert or ignore into user_risk_rules (user_id, reject_high_risks, allow_missing_image,
+          reject_non_original_screen, reject_screen_replaced, reject_missing_invoice,
+          min_seller_reviews, min_seller_rating, min_battery_health,
+          allowed_countries_json, custom_exclude_keywords_json, custom_exclude_severity, updated_at)
+        select 1, reject_high_risks, allow_missing_image, reject_non_original_screen,
+          reject_screen_replaced, reject_missing_invoice, min_seller_reviews, min_seller_rating,
+          min_battery_health, allowed_countries_json, custom_exclude_keywords_json,
+          custom_exclude_severity, updated_at
+        from dashboard_risk_rules where id = 1;
+
+        create table if not exists usage_log (
+          user_id integer not null references users(id) on delete cascade,
+          day text not null,
+          products_fetched integer not null default 0,
+          scans_run integer not null default 0,
+          primary key (user_id, day)
+        );
+
+        create index if not exists idx_usage_log_day on usage_log (day);
+      `);
+    }
+
+    // Add nullable user_id column with default 1 (the seed admin) to every
+    // existing data table. Nullable + default lets existing rows backfill in
+    // place; new rows must pass an explicit user_id from the application.
+    const userIdColumn = "integer not null default 1 references users(id)";
+    await this.addColumnIfMissing("dashboard_searches", "user_id", userIdColumn);
+    await this.addColumnIfMissing("dashboard_model_rules", "user_id", userIdColumn);
+    await this.addColumnIfMissing("scan_runs", "user_id", userIdColumn);
+    await this.addColumnIfMissing("deal_candidates", "user_id", userIdColumn);
+    await this.addColumnIfMissing("admin_sessions", "user_id", userIdColumn);
+    await this.addColumnIfMissing("dashboard_logs", "user_id", userIdColumn);
+
+    // Composite PK on dashboard_model_rules — guarded by a one-shot flag in
+    // dashboard_settings because dropping a primary key is destructive.
+    const flag = await this.db.get("select value from dashboard_settings where key = 'multi_tenant_model_rules_pk'");
+    if (!flag) {
+      if (this.db.dialect === "postgres") {
+        await this.db.exec(`
+          alter table dashboard_model_rules drop constraint if exists dashboard_model_rules_pkey;
+          alter table dashboard_model_rules add constraint dashboard_model_rules_pkey primary key (user_id, model);
+        `);
+      } else {
+        // SQLite doesn't support `alter table drop constraint`. Rebuild the
+        // table preserving all rows and the new composite PK.
+        await this.db.exec(`
+          create table dashboard_model_rules_new (
+            user_id integer not null default 1 references users(id),
+            model text not null,
+            enabled integer not null default 1,
+            storages_json text not null,
+            max_final_price real,
+            min_score integer,
+            min_discount real,
+            min_savings real,
+            updated_at text not null,
+            primary key (user_id, model)
+          );
+          insert into dashboard_model_rules_new (user_id, model, enabled, storages_json,
+            max_final_price, min_score, min_discount, min_savings, updated_at)
+          select coalesce(user_id, 1), model, enabled, storages_json,
+            max_final_price, min_score, min_discount, min_savings, updated_at
+          from dashboard_model_rules;
+          drop table dashboard_model_rules;
+          alter table dashboard_model_rules_new rename to dashboard_model_rules;
+        `);
+      }
+      await this.db.run(
+        this.db.dialect === "postgres"
+          ? "insert into dashboard_settings (key, value, secret, updated_at) values ('multi_tenant_model_rules_pk', '1', 0, now())"
+          : "insert into dashboard_settings (key, value, secret, updated_at) values ('multi_tenant_model_rules_pk', '1', 0, CURRENT_TIMESTAMP)"
+      );
+    }
   }
 
   private async addColumnIfMissing(table: string, column: string, definition: string): Promise<void> {
@@ -913,6 +1423,38 @@ function riskRulesFromRow(row: Record<string, unknown>): RiskRules {
 function severityFromRow(value: unknown): RiskRules["customExcludeSeverity"] {
   if (value === "high" || value === "medium") return value;
   return "reject";
+}
+
+function userFromRow(row: Record<string, unknown>): User {
+  const plan = row.plan === "pro" || row.plan === "admin" ? row.plan : "free";
+  return {
+    id: Number(row.id),
+    discordId: String(row.discord_id),
+    discordUsername: (row.discord_username as string | null) ?? null,
+    discordAvatar: (row.discord_avatar as string | null) ?? null,
+    email: (row.email as string | null) ?? null,
+    plan,
+    dailyApifyQuota: Number(row.daily_apify_quota ?? 30),
+    betaApproved: Number(row.beta_approved) === 1,
+    createdAt: String(row.created_at),
+    lastLoginAt: row.last_login_at == null ? null : String(row.last_login_at)
+  };
+}
+
+function userSettingsFromRow(row: Record<string, unknown>): UserSettings {
+  return {
+    userId: Number(row.user_id),
+    discordWebhookConfigured: Number(row.discord_webhook_configured) === 1,
+    dryRun: Number(row.dry_run) === 1,
+    pollIntervalSeconds: Number(row.poll_interval_seconds ?? 900),
+    minDiscountPct: row.min_discount_pct == null ? null : Number(row.min_discount_pct),
+    maxProductPrice: row.max_product_price == null ? null : Number(row.max_product_price),
+    updatedAt: String(row.updated_at)
+  };
+}
+
+function messageFromError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function scanRunFromRow(row: Record<string, unknown>): ScanRunRecord {

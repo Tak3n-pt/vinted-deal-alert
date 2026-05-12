@@ -44,6 +44,8 @@ const emptySearch = { enabled: true, query: "", url: "", limit: 10 };
 
 function App() {
   const [authenticated, setAuthenticated] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [userSettings, setUserSettings] = useState(null);
   const [activeTab, setActiveTab] = useState("dashboard");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -59,7 +61,10 @@ function App() {
 
   useEffect(() => {
     api("/api/auth/me")
-      .then((data) => setAuthenticated(Boolean(data.authenticated)))
+      .then((data) => {
+        setAuthenticated(Boolean(data.authenticated));
+        setCurrentUser(data.user ?? null);
+      })
       .catch(() => setAuthenticated(false));
   }, []);
 
@@ -74,10 +79,11 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const [statusData, settingsData, searchesData, modelRulesData, riskRulesData, dealsData, scansData, logsData] =
+      const [statusData, settingsData, userSettingsData, searchesData, modelRulesData, riskRulesData, dealsData, scansData, logsData] =
         await Promise.all([
           api("/api/status"),
           api("/api/settings"),
+          api("/api/user/settings"),
           api("/api/searches"),
           api("/api/model-rules"),
           api("/api/risk-rules"),
@@ -87,6 +93,7 @@ function App() {
         ]);
       setStatus(statusData.status);
       setSettings(settingsData.settings);
+      setUserSettings(userSettingsData.settings);
       setSearches(searchesData.searches);
       setModelRules(modelRulesData.modelRules);
       setRiskRules(riskRulesData.riskRules);
@@ -154,10 +161,32 @@ function App() {
         <div className="brand">
           <span className="brand-mark"><Bot size={22} /></span>
           <div>
-            <strong>Vinted Deal Alert</strong>
+            <strong>Bonoitec Flash</strong>
             <span>{botStateLabel(status)}</span>
           </div>
         </div>
+
+        {currentUser ? (
+          <div className="user-card">
+            {currentUser.avatar ? (
+              <img
+                className="user-avatar"
+                src={`https://cdn.discordapp.com/avatars/${currentUser.discordId}/${currentUser.avatar}.png?size=64`}
+                alt=""
+              />
+            ) : (
+              <div className="user-avatar placeholder">
+                {(currentUser.username ?? "?").charAt(0).toUpperCase()}
+              </div>
+            )}
+            <div className="user-meta">
+              <strong>{currentUser.username ?? "Utilisateur"}</strong>
+              <span className={`plan-badge plan-${currentUser.plan}`}>
+                {currentUser.plan === "admin" ? "Admin" : currentUser.plan === "pro" ? "Pro" : "Gratuit"}
+              </span>
+            </div>
+          </div>
+        ) : null}
 
         <nav aria-label="Navigation principale">
           {tabs.map((tab) => {
@@ -201,6 +230,15 @@ function App() {
         {error ? <div className="alert error"><XCircle size={18} /> {error}</div> : null}
         {notice ? <div className="alert success"><CheckCircle2 size={18} /> {notice}</div> : null}
 
+        {userSettings && !userSettings.discordWebhookConfigured ? (
+          <WebhookOnboarding
+            onSaved={async () => {
+              await refreshAll();
+              setNotice("Webhook Discord configuré. Tu peux maintenant lancer un scan.");
+            }}
+          />
+        ) : null}
+
         {activeTab === "dashboard" ? (
           <DashboardPage
             status={status}
@@ -233,10 +271,73 @@ function App() {
   );
 }
 
+function WebhookOnboarding({ onSaved }) {
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [tested, setTested] = useState(false);
+
+  async function saveAndTest() {
+    setBusy(true);
+    setError("");
+    try {
+      await api("/api/user/settings", {
+        method: "PUT",
+        body: { discordWebhookUrl: url.trim() }
+      });
+      await api("/api/user/webhook/test", { method: "POST" });
+      setTested(true);
+      await onSaved();
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="onboarding-banner">
+      <div className="onboarding-head">
+        <Send size={20} />
+        <div>
+          <strong>Connecte ton Discord pour recevoir tes alertes</strong>
+          <p>
+            Crée un webhook dans ton serveur Discord (Paramètres → Intégrations →
+            Webhooks → Nouveau) et colle l'URL ici. Tu recevras une notification
+            test pour vérifier que ça marche.
+          </p>
+        </div>
+      </div>
+      <div className="onboarding-form">
+        <input
+          type="url"
+          placeholder="https://discord.com/api/webhooks/…"
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+          disabled={busy}
+          autoFocus
+        />
+        <button className="primary" onClick={saveAndTest} disabled={busy || !url.trim()}>
+          <CheckCircle2 size={18} /> {busy ? "Test en cours…" : "Connecter et tester"}
+        </button>
+      </div>
+      {error ? <div className="field-error">{error}</div> : null}
+      {tested ? (
+        <div className="onboarding-success">
+          <CheckCircle2 size={16} /> Webhook validé. Tu peux ajouter tes recherches.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Login({ onLogin }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPasswordForm, setShowPasswordForm] = useState(false);
+  const params = new URLSearchParams(window.location.search);
+  const betaDenied = params.get("beta") === "denied";
 
   async function submit(event) {
     event.preventDefault();
@@ -252,25 +353,64 @@ function Login({ onLogin }) {
     }
   }
 
+  function goToDiscordOAuth() {
+    window.location.href = "/api/auth/discord/start";
+  }
+
   return (
     <main className="login-screen">
-      <form className="login-panel" onSubmit={submit}>
+      <div className="login-panel">
         <div className="brand large">
-          <span className="brand-mark"><LockKeyhole size={24} /></span>
+          <span className="brand-mark"><Bot size={24} /></span>
           <div>
-            <strong>Vinted Deal Alert</strong>
-            <span>Accès administrateur</span>
+            <strong>Bonoitec Flash</strong>
+            <span>Vinted deal alerts</span>
           </div>
         </div>
-        <label>
-          Mot de passe
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoFocus autoComplete="current-password" />
-        </label>
-        {error ? <div className="field-error">{error}</div> : null}
-        <button className="primary full" disabled={loading || !password}>
-          <Shield size={18} /> Connexion
+        {betaDenied ? (
+          <div className="field-error">
+            Ton compte Discord n'est pas encore sur la liste d'accès anticipé.
+            Demande une invitation via le serveur Bonoitec.
+          </div>
+        ) : null}
+        <button className="primary full discord-button" onClick={goToDiscordOAuth} type="button">
+          <svg width="20" height="20" viewBox="0 0 71 55" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path fill="currentColor" d="M60.1 4.9A58.5 58.5 0 0 0 45.6.4a40.8 40.8 0 0 0-1.9 3.8 53.9 53.9 0 0 0-16.4 0A40.7 40.7 0 0 0 25.4.4a58.9 58.9 0 0 0-14.5 4.5C2.1 18.7-.6 32.1.8 45.3a59.1 59.1 0 0 0 17.7 8.9c1.4-1.9 2.7-3.9 3.8-6a37.9 37.9 0 0 1-6-2.9c.5-.4 1-.7 1.5-1.1a42 42 0 0 0 36.6 0c.5.4 1 .7 1.5 1.1a37.9 37.9 0 0 1-6 2.9c1.1 2.1 2.4 4.1 3.8 6a59 59 0 0 0 17.7-8.9c1.7-15.2-2.6-28.6-11.3-40.4ZM23.7 37.3c-3.5 0-6.4-3.2-6.4-7.2 0-3.9 2.8-7.2 6.4-7.2 3.6 0 6.5 3.3 6.4 7.2 0 4-2.9 7.2-6.4 7.2Zm23.6 0c-3.5 0-6.4-3.2-6.4-7.2 0-3.9 2.8-7.2 6.4-7.2 3.6 0 6.5 3.3 6.4 7.2 0 4-2.8 7.2-6.4 7.2Z"/>
+          </svg>
+          Continuer avec Discord
         </button>
-      </form>
+        <p className="login-hint">
+          Authentification sécurisée. Nous lisons seulement ton identifiant
+          Discord et ton email — rien d'autre.
+        </p>
+        {showPasswordForm ? (
+          <form onSubmit={submit} className="login-fallback">
+            <hr />
+            <label>
+              Mot de passe administrateur
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoFocus
+                autoComplete="current-password"
+              />
+            </label>
+            {error ? <div className="field-error">{error}</div> : null}
+            <button className="secondary full" disabled={loading || !password}>
+              <Shield size={18} /> Connexion administrateur
+            </button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => setShowPasswordForm(true)}
+          >
+            <LockKeyhole size={14} /> Accès administrateur
+          </button>
+        )}
+      </div>
     </main>
   );
 }

@@ -65,6 +65,7 @@ export async function runScan({
   delivery,
   scanRunId,
   dashboardStore,
+  userId,
   now = () => new Date()
 }: {
   provider: Pick<ListingProvider, "search">;
@@ -75,6 +76,12 @@ export async function runScan({
   delivery?: AlertDeliveryOptions;
   scanRunId?: number;
   dashboardStore?: Pick<DashboardStore, "recordDealCandidates" | "log">;
+  /**
+   * Owner of this scan. Threads through to recordDealCandidates and log so
+   * each row is properly scoped. Defaults to 1 (seed admin) when omitted —
+   * preserves single-tenant CLI usage (`npm run once`).
+   */
+  userId?: number;
   /** Injectable clock for testing quiet-hours logic. */
   now?: () => Date;
 }): Promise<{ listings: number; scored: number; alertable: number; sent: number; bestCandidate: string }> {
@@ -99,40 +106,43 @@ export async function runScan({
   const maxPerScan = delivery?.maxAlertsPerScan ?? 0;
   const maxPerDay = delivery?.maxAlertsPerDay ?? 0;
   const inQuietHours = isInQuietHours(delivery, now());
-  const startingDailyAlerts = maxPerDay > 0 ? await store.alertsInLast24h() : 0;
+  // All alert-state operations are scoped to the user owning this scan.
+  // Default to seed admin (id=1) preserves single-tenant CLI behavior.
+  const scanUserId = userId ?? 1;
+  const startingDailyAlerts = maxPerDay > 0 ? await store.alertsInLast24h(scanUserId) : 0;
   let sentAlerts = 0;
   const sentListingIds = new Set<string>();
 
   for (const deal of scored.filter((item) => item.shouldAlert)) {
     if (maxPerScan > 0 && sentAlerts >= maxPerScan) {
-      await dashboardStore?.log("warn", `Plafond par scan atteint (${maxPerScan}). Alertes restantes différées.`);
+      await dashboardStore?.log("warn", `Plafond par scan atteint (${maxPerScan}). Alertes restantes différées.`, userId);
       break;
     }
     if (maxPerDay > 0 && startingDailyAlerts + sentAlerts >= maxPerDay) {
-      await dashboardStore?.log("warn", `Plafond journalier atteint (${maxPerDay}). Alertes restantes différées.`);
+      await dashboardStore?.log("warn", `Plafond journalier atteint (${maxPerDay}). Alertes restantes différées.`, userId);
       break;
     }
     if (inQuietHours) {
-      await dashboardStore?.log("info", `Heures calmes : alerte ${deal.match.model} reportée. Visible dans le tableau.`);
+      await dashboardStore?.log("info", `Heures calmes : alerte ${deal.match.model} reportée. Visible dans le tableau.`, userId);
       continue;
     }
-    if (!(await store.reserveAlert(deal, dropPercent))) continue;
+    if (!(await store.reserveAlert(deal, dropPercent, scanUserId))) continue;
 
     try {
       await discord.sendDeal(deal);
-      await store.recordAlert(deal);
+      await store.recordAlert(deal, scanUserId);
       sentListingIds.add(deal.listing.id);
       sentAlerts += 1;
       console.log(`[alerte] ${deal.match.model} ${Math.round(deal.finalPrice)} EUR final score=${deal.score} url=${deal.listing.url}`);
     } catch (error) {
-      await store.releaseAlert(deal);
+      await store.releaseAlert(deal, scanUserId);
       throw error;
     }
   }
 
   const alertable = scored.filter((item) => item.shouldAlert).length;
   const bestCandidate = scored[0] ? candidateSummary(scored[0]) : "aucun";
-  await dashboardStore?.recordDealCandidates(scanRunId, scored, sentListingIds);
+  await dashboardStore?.recordDealCandidates(scanRunId, scored, sentListingIds, userId);
   console.log(`[scan] annonces=${uniqueListings.length} scorées=${scored.length} alertables=${alertable} envoyées=${sentAlerts} meilleur=${bestCandidate}`);
   return { listings: uniqueListings.length, scored: scored.length, alertable, sent: sentAlerts, bestCandidate };
 }
