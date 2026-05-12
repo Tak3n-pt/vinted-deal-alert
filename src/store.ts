@@ -8,11 +8,18 @@ import { openSqlDatabase, type SqlDatabase } from "./sqlDatabase.js";
 export interface DealStoreApi {
   saveObserved(listing: Listing, match: PhoneMatch): Promise<void>;
   recentHistory(days?: number): Promise<HistoricalListing[]>;
-  shouldSendAlert(deal: ScoredDeal, dropPercent?: number): Promise<boolean>;
-  reserveAlert(deal: ScoredDeal, dropPercent?: number): Promise<boolean>;
-  recordAlert(deal: ScoredDeal): Promise<void>;
-  releaseAlert(deal: ScoredDeal): Promise<void>;
-  alertsInLast24h(): Promise<number>;
+  /**
+   * All alert operations are scoped to a single user so two users with
+   * overlapping filters both get alerted on shared listings. `observed_listings`
+   * stays global (more history = better benchmarks); only `sent_alerts` is
+   * partitioned per user. `userId` defaults to 1 (seed admin) to preserve
+   * single-tenant CLI usage (`npm run once`) and existing tests.
+   */
+  shouldSendAlert(deal: ScoredDeal, dropPercent?: number, userId?: number): Promise<boolean>;
+  reserveAlert(deal: ScoredDeal, dropPercent?: number, userId?: number): Promise<boolean>;
+  recordAlert(deal: ScoredDeal, userId?: number): Promise<void>;
+  releaseAlert(deal: ScoredDeal, userId?: number): Promise<void>;
+  alertsInLast24h(userId?: number): Promise<number>;
 }
 
 export class DealStore implements DealStoreApi {
@@ -71,27 +78,30 @@ export class DealStore implements DealStoreApi {
     });
   }
 
-  async shouldSendAlert(deal: ScoredDeal, dropPercent = 0.10): Promise<boolean> {
-    const previous = await this.db.get("select price from sent_alerts where listing_id = ?", [deal.listing.id]);
+  async shouldSendAlert(deal: ScoredDeal, dropPercent?: number, userId: number = 1): Promise<boolean> {
+    const previous = await this.db.get(
+      "select price from sent_alerts where listing_id = ? and user_id = ?",
+      [deal.listing.id, userId]
+    );
     if (!previous) return true;
     const previousPrice = Number(previous.price);
     if (!Number.isFinite(previousPrice)) return true;
-    const ratio = clampDropRatio(dropPercent);
+    const ratio = clampDropRatio(dropPercent ?? 0.10);
     return deal.finalPrice <= previousPrice * (1 - ratio);
   }
 
-  async reserveAlert(deal: ScoredDeal, dropPercent = 0.10): Promise<boolean> {
+  async reserveAlert(deal: ScoredDeal, dropPercent?: number, userId: number = 1): Promise<boolean> {
     const staleReservedExpression =
       this.db.dialect === "postgres"
         ? "sent_alerts.reserved_at <= CURRENT_TIMESTAMP - interval '15 minutes'"
         : "sent_alerts.reserved_at <= datetime('now', '-15 minutes')";
-    const ratio = clampDropRatio(dropPercent);
+    const ratio = clampDropRatio(dropPercent ?? 0.10);
     const keepFactor = 1 - ratio;
     const result = await this.db.run(
       `insert into sent_alerts
-        (listing_id, price, score, url, status, reserved_at, sent_at)
-       values (?, ?, ?, ?, 'reserved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-       on conflict(listing_id) do update set
+        (user_id, listing_id, price, score, url, status, reserved_at, sent_at)
+       values (?, ?, ?, ?, ?, 'reserved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       on conflict(user_id, listing_id) do update set
          price = excluded.price,
          score = excluded.score,
          url = excluded.url,
@@ -104,39 +114,42 @@ export class DealStore implements DealStoreApi {
            sent_alerts.status = 'reserved'
            and ${staleReservedExpression}
          )`,
-      [deal.listing.id, deal.finalPrice, deal.score, deal.listing.url, keepFactor]
+      [userId, deal.listing.id, deal.finalPrice, deal.score, deal.listing.url, keepFactor]
     );
 
     return result.changes > 0;
   }
 
-  async alertsInLast24h(): Promise<number> {
+  async alertsInLast24h(userId: number = 1): Promise<number> {
     const sql =
       this.db.dialect === "postgres"
-        ? "select count(*) as count from sent_alerts where status = 'sent' and sent_at >= CURRENT_TIMESTAMP - interval '24 hours'"
-        : "select count(*) as count from sent_alerts where status = 'sent' and sent_at >= datetime('now', '-24 hours')";
-    const row = await this.db.get(sql);
+        ? "select count(*) as count from sent_alerts where user_id = ? and status = 'sent' and sent_at >= CURRENT_TIMESTAMP - interval '24 hours'"
+        : "select count(*) as count from sent_alerts where user_id = ? and status = 'sent' and sent_at >= datetime('now', '-24 hours')";
+    const row = await this.db.get(sql, [userId]);
     return Number(row?.count ?? 0);
   }
 
-  async recordAlert(deal: ScoredDeal): Promise<void> {
+  async recordAlert(deal: ScoredDeal, userId: number = 1): Promise<void> {
     await this.db.run(
       `insert into sent_alerts
-        (listing_id, price, score, url, status, reserved_at, sent_at)
-       values (?, ?, ?, ?, 'sent', null, CURRENT_TIMESTAMP)
-       on conflict(listing_id) do update set
+        (user_id, listing_id, price, score, url, status, reserved_at, sent_at)
+       values (?, ?, ?, ?, ?, 'sent', null, CURRENT_TIMESTAMP)
+       on conflict(user_id, listing_id) do update set
          price = excluded.price,
          score = excluded.score,
          url = excluded.url,
          status = 'sent',
          reserved_at = null,
          sent_at = CURRENT_TIMESTAMP`,
-      [deal.listing.id, deal.finalPrice, deal.score, deal.listing.url]
+      [userId, deal.listing.id, deal.finalPrice, deal.score, deal.listing.url]
     );
   }
 
-  async releaseAlert(deal: ScoredDeal): Promise<void> {
-    await this.db.run("delete from sent_alerts where listing_id = ? and status = 'reserved'", [deal.listing.id]);
+  async releaseAlert(deal: ScoredDeal, userId: number = 1): Promise<void> {
+    await this.db.run(
+      "delete from sent_alerts where listing_id = ? and user_id = ? and status = 'reserved'",
+      [deal.listing.id, userId]
+    );
   }
 
   async close(): Promise<void> {
@@ -170,6 +183,7 @@ export class DealStore implements DealStoreApi {
           sent_at timestamptz not null
         );
       `);
+      await this.applyMultiTenantAlerts();
       return;
     }
 
@@ -200,6 +214,50 @@ export class DealStore implements DealStoreApi {
     `);
     await this.addColumnIfMissing("sent_alerts", "status", "text not null default 'sent'");
     await this.addColumnIfMissing("sent_alerts", "reserved_at", "text");
+    await this.applyMultiTenantAlerts();
+  }
+
+  /**
+   * Partition `sent_alerts` per user so two users with overlapping filters
+   * both get notified on shared listings. Idempotent: the presence of the
+   * `user_id` column is the marker — if it already exists, skip the rebuild.
+   * Existing rows backfill to user_id=1 (the seed admin).
+   */
+  private async applyMultiTenantAlerts(): Promise<void> {
+    if (this.db.dialect === "postgres") {
+      const userIdExists = await this.db.get(
+        `select 1 as present from information_schema.columns
+         where table_name = 'sent_alerts' and column_name = 'user_id'`
+      );
+      if (userIdExists) return;
+      await this.db.exec(`
+        alter table sent_alerts add column user_id integer not null default 1;
+        alter table sent_alerts drop constraint sent_alerts_pkey;
+        alter table sent_alerts add constraint sent_alerts_pkey primary key (user_id, listing_id);
+      `);
+      return;
+    }
+    // SQLite: check pragma for the column; if missing, rebuild the table with
+    // a composite PK preserving all existing rows (backfilled to user_id=1).
+    const cols = await this.db.all(`pragma table_info(sent_alerts)`);
+    if (cols.some((row) => row.name === "user_id")) return;
+    await this.db.exec(`
+      create table sent_alerts_new (
+        user_id integer not null default 1,
+        listing_id text not null,
+        price real not null,
+        score integer not null,
+        url text not null,
+        status text not null default 'sent',
+        reserved_at text,
+        sent_at text not null,
+        primary key (user_id, listing_id)
+      );
+      insert into sent_alerts_new (user_id, listing_id, price, score, url, status, reserved_at, sent_at)
+      select 1, listing_id, price, score, url, status, reserved_at, sent_at from sent_alerts;
+      drop table sent_alerts;
+      alter table sent_alerts_new rename to sent_alerts;
+    `);
   }
 
   private async addColumnIfMissing(table: string, column: string, definition: string): Promise<void> {

@@ -61,6 +61,32 @@ test("alertsInLast24h counts only sent alerts in the last 24 hours", async () =>
   assert.equal(await store.alertsInLast24h(), 2);
 });
 
+test("alert state is scoped per user — two users both alert on the same listing", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "vinted-multi-tenant-")), "deals.sqlite");
+  const store = await DealStore.open(path);
+  const deal = scoredDeal(650);
+
+  // User 1 reserves and sends — that listing is now "alerted" for user 1
+  assert.equal(await store.reserveAlert(deal, undefined, 1), true);
+  await store.recordAlert(deal, 1);
+  // User 1 attempting again on the same listing without a price drop is blocked
+  assert.equal(await store.reserveAlert(deal, undefined, 1), false);
+
+  // User 2 attempting the same listing must NOT be blocked by user 1's alert
+  assert.equal(await store.reserveAlert(deal, undefined, 2), true);
+  await store.recordAlert(deal, 2);
+
+  // Daily counts are independent per user
+  assert.equal(await store.alertsInLast24h(1), 1);
+  assert.equal(await store.alertsInLast24h(2), 1);
+
+  // User 1's re-alert threshold (10% drop) still applies to user 1 alone
+  assert.equal(await store.shouldSendAlert(scoredDeal(620), undefined, 1), false);
+  assert.equal(await store.shouldSendAlert(scoredDeal(585), undefined, 1), true);
+  // User 2's threshold tracks user 2's own price, not user 1's
+  assert.equal(await store.shouldSendAlert(scoredDeal(620), undefined, 2), false);
+});
+
 test("stores final observed costs and ignores unrealistic low prices in benchmark history", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "vinted-deals-")), "deals.sqlite");
   const store = await DealStore.open(path);

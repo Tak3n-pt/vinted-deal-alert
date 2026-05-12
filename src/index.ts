@@ -106,7 +106,10 @@ export async function runScan({
   const maxPerScan = delivery?.maxAlertsPerScan ?? 0;
   const maxPerDay = delivery?.maxAlertsPerDay ?? 0;
   const inQuietHours = isInQuietHours(delivery, now());
-  const startingDailyAlerts = maxPerDay > 0 ? await store.alertsInLast24h() : 0;
+  // All alert-state operations are scoped to the user owning this scan.
+  // Default to seed admin (id=1) preserves single-tenant CLI behavior.
+  const scanUserId = userId ?? 1;
+  const startingDailyAlerts = maxPerDay > 0 ? await store.alertsInLast24h(scanUserId) : 0;
   let sentAlerts = 0;
   const sentListingIds = new Set<string>();
 
@@ -123,16 +126,16 @@ export async function runScan({
       await dashboardStore?.log("info", `Heures calmes : alerte ${deal.match.model} reportée. Visible dans le tableau.`, userId);
       continue;
     }
-    if (!(await store.reserveAlert(deal, dropPercent))) continue;
+    if (!(await store.reserveAlert(deal, dropPercent, scanUserId))) continue;
 
     try {
       await discord.sendDeal(deal);
-      await store.recordAlert(deal);
+      await store.recordAlert(deal, scanUserId);
       sentListingIds.add(deal.listing.id);
       sentAlerts += 1;
       console.log(`[alerte] ${deal.match.model} ${Math.round(deal.finalPrice)} EUR final score=${deal.score} url=${deal.listing.url}`);
     } catch (error) {
-      await store.releaseAlert(deal);
+      await store.releaseAlert(deal, scanUserId);
       throw error;
     }
   }

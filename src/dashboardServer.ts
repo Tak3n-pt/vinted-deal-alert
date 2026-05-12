@@ -201,6 +201,12 @@ async function handleApi(
       sendRedirect(res, "/?beta=denied");
       return;
     }
+    // Flip beta_approved=1 once the gate has been crossed so the bot loop
+    // (`listActiveUsers`) actually scans for this user. Admins skip the
+    // beta gate but their seed row already has beta_approved=1.
+    if (!user.betaApproved && user.plan !== "admin") {
+      await dashboardStore.setUserBetaApproved(user.id, true);
+    }
     const token = randomBytes(32).toString("base64url");
     await dashboardStore.createSession(
       hashToken(token),
@@ -406,14 +412,25 @@ async function handleApi(
   if (req.method === "POST" && url.pathname === "/api/user/webhook/test") {
     const webhook = await dashboardStore.getDecryptedWebhook(userId);
     if (!webhook) throw new HttpError(400, "Aucun webhook configuré");
-    const probeResponse = await fetch(webhook, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        username: "Bonoitec Flash",
-        content: ":satellite: Test webhook — votre dashboard Bonoitec est bien connecté à Discord."
-      })
-    });
+    let probeResponse: Response;
+    try {
+      probeResponse = await fetch(webhook, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          username: "Bonoitec Flash",
+          content: ":satellite: Test webhook — votre dashboard Bonoitec est bien connecté à Discord."
+        }),
+        // Hard 5s ceiling — Discord normally responds in <200ms; anything past
+        // this is almost always a wrong URL or a transient network issue.
+        signal: AbortSignal.timeout(5000)
+      });
+    } catch (error) {
+      const message = error instanceof Error && error.name === "TimeoutError"
+        ? "Discord n'a pas répondu en 5 s — vérifier l'URL du webhook"
+        : `Réseau : ${error instanceof Error ? error.message : String(error)}`;
+      throw new HttpError(502, message);
+    }
     if (!probeResponse.ok) {
       const detail = await probeResponse.text().catch(() => "");
       throw new HttpError(
