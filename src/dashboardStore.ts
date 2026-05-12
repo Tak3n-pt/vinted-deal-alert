@@ -9,9 +9,11 @@ import type {
   DashboardSettingsInput,
   DashboardSettingsView,
   DealCandidateRecord,
+  DiscordProfile,
   ModelRule,
   RiskRules,
-  ScanRunRecord
+  ScanRunRecord,
+  User
 } from "./dashboardTypes.js";
 
 const DEFAULT_MIN_SCORE = 82;
@@ -474,8 +476,11 @@ export class DashboardStore {
     await this.db.run("insert into dashboard_logs (level, message, created_at) values (?, ?, CURRENT_TIMESTAMP)", [level, message]);
   }
 
-  async createSession(tokenHash: string, expiresAt: string): Promise<void> {
-    await this.db.run("insert into admin_sessions (token_hash, expires_at, created_at) values (?, ?, CURRENT_TIMESTAMP)", [tokenHash, expiresAt]);
+  async createSession(tokenHash: string, expiresAt: string, userId: number = 1): Promise<void> {
+    await this.db.run(
+      "insert into admin_sessions (token_hash, expires_at, created_at, user_id) values (?, ?, CURRENT_TIMESTAMP, ?)",
+      [tokenHash, expiresAt, userId]
+    );
   }
 
   async validateSession(tokenHash: string): Promise<boolean> {
@@ -485,8 +490,79 @@ export class DashboardStore {
     return Boolean(row);
   }
 
+  /**
+   * Return the user_id bound to a session token (after cleaning expired
+   * sessions). Returns null if no valid session.
+   */
+  async getSessionUser(tokenHash: string): Promise<number | null> {
+    const expirationSql = this.db.dialect === "postgres" ? "expires_at <= CURRENT_TIMESTAMP" : "expires_at <= datetime('now')";
+    await this.db.run(`delete from admin_sessions where ${expirationSql}`);
+    const row = await this.db.get("select user_id from admin_sessions where token_hash = ?", [tokenHash]);
+    if (!row) return null;
+    const value = Number(row.user_id);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
   async deleteSession(tokenHash: string): Promise<void> {
     await this.db.run("delete from admin_sessions where token_hash = ?", [tokenHash]);
+  }
+
+  /**
+   * Insert or update a user from a fresh Discord profile. Returns the row.
+   * The unique key is `discord_id` (Discord snowflake). On update, refreshes
+   * username, avatar, email, and last_login_at.
+   */
+  async upsertUserFromDiscord(profile: DiscordProfile): Promise<User> {
+    const username = profile.global_name?.trim() || profile.username || null;
+    const avatar = profile.avatar ?? null;
+    const email = profile.email ?? null;
+    if (this.db.dialect === "postgres") {
+      await this.db.run(
+        `insert into users (discord_id, discord_username, discord_avatar, email, last_login_at)
+         values (?, ?, ?, ?, now())
+         on conflict (discord_id) do update set
+           discord_username = excluded.discord_username,
+           discord_avatar = excluded.discord_avatar,
+           email = excluded.email,
+           last_login_at = now()`,
+        [profile.id, username, avatar, email]
+      );
+    } else {
+      await this.db.run(
+        `insert into users (discord_id, discord_username, discord_avatar, email, last_login_at)
+         values (?, ?, ?, ?, CURRENT_TIMESTAMP)
+         on conflict (discord_id) do update set
+           discord_username = excluded.discord_username,
+           discord_avatar = excluded.discord_avatar,
+           email = excluded.email,
+           last_login_at = CURRENT_TIMESTAMP`,
+        [profile.id, username, avatar, email]
+      );
+    }
+    const row = await this.db.get("select * from users where discord_id = ?", [profile.id]);
+    if (!row) throw new Error("upsertUserFromDiscord: user row missing after upsert");
+    // Ensure user_settings row exists for this user
+    await this.db.run(
+      this.db.dialect === "postgres"
+        ? "insert into user_settings (user_id) values (?) on conflict (user_id) do nothing"
+        : "insert or ignore into user_settings (user_id) values (?)",
+      [Number(row.id)]
+    );
+    return userFromRow(row);
+  }
+
+  async getUserById(id: number): Promise<User | null> {
+    const row = await this.db.get("select * from users where id = ?", [id]);
+    return row ? userFromRow(row) : null;
+  }
+
+  async getUserByDiscordId(discordId: string): Promise<User | null> {
+    const row = await this.db.get("select * from users where discord_id = ?", [discordId]);
+    return row ? userFromRow(row) : null;
+  }
+
+  async setUserBetaApproved(id: number, approved: boolean): Promise<void> {
+    await this.db.run("update users set beta_approved = ? where id = ?", [approved ? 1 : 0, id]);
   }
 
   async close(): Promise<void> {
@@ -1122,6 +1198,22 @@ function riskRulesFromRow(row: Record<string, unknown>): RiskRules {
 function severityFromRow(value: unknown): RiskRules["customExcludeSeverity"] {
   if (value === "high" || value === "medium") return value;
   return "reject";
+}
+
+function userFromRow(row: Record<string, unknown>): User {
+  const plan = row.plan === "pro" || row.plan === "admin" ? row.plan : "free";
+  return {
+    id: Number(row.id),
+    discordId: String(row.discord_id),
+    discordUsername: (row.discord_username as string | null) ?? null,
+    discordAvatar: (row.discord_avatar as string | null) ?? null,
+    email: (row.email as string | null) ?? null,
+    plan,
+    dailyApifyQuota: Number(row.daily_apify_quota ?? 30),
+    betaApproved: Number(row.beta_approved) === 1,
+    createdAt: String(row.created_at),
+    lastLoginAt: row.last_login_at == null ? null : String(row.last_login_at)
+  };
 }
 
 function scanRunFromRow(row: Record<string, unknown>): ScanRunRecord {

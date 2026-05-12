@@ -9,9 +9,19 @@ import { DashboardStore } from "./dashboardStore.js";
 import { BotController, type BotStatus } from "./botController.js";
 import type { RuntimeConfig, SearchConfig } from "./types.js";
 import type { DashboardSettingsInput, ModelRule } from "./dashboardTypes.js";
+import {
+  buildAuthorizeUrl,
+  exchangeCodeForToken,
+  fetchDiscordProfile,
+  generateOAuthState,
+  isBetaAllowed,
+  loadDiscordOAuthConfig
+} from "./discordOAuth.js";
 
 const SESSION_COOKIE = "vinted_admin_session";
+const OAUTH_STATE_COOKIE = "vinted_oauth_state";
 const SESSION_DAYS = 7;
+const OAUTH_STATE_TTL_SEC = 600;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 8;
 
@@ -131,7 +141,13 @@ async function handleApi(
   loginAttempts: Map<string, { count: number; resetAt: number }>,
   writeAttempts: Map<string, { count: number; resetAt: number }>
 ): Promise<void> {
+  // Legacy password login. Tied to user_id = 1 (the seed admin). Gated behind
+  // LEGACY_PASSWORD_LOGIN=1 in production so OAuth becomes the only entry point
+  // once the team rolls out Discord auth. Always available in non-production
+  // (NODE_ENV !== "production") for emergency operator access.
+  const legacyPasswordEnabled = process.env.NODE_ENV !== "production" || process.env.LEGACY_PASSWORD_LOGIN === "1";
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    if (!legacyPasswordEnabled) throw new HttpError(410, "Connexion par mot de passe désactivée. Utiliser Discord.");
     const loginKey = clientKey(req);
     if (isLoginLimited(loginAttempts, loginKey)) throw new HttpError(429, "Trop de tentatives de connexion. Réessayer plus tard.");
     const body = await readJson<{ password?: string }>(req);
@@ -141,14 +157,91 @@ async function handleApi(
     }
     loginAttempts.delete(loginKey);
     const token = randomBytes(32).toString("base64url");
-    await dashboardStore.createSession(hashToken(token), sessionDate(new Date(Date.now() + SESSION_DAYS * 864e5)));
+    await dashboardStore.createSession(
+      hashToken(token),
+      sessionDate(new Date(Date.now() + SESSION_DAYS * 864e5)),
+      1 /* seed admin */
+    );
     res.setHeader("set-cookie", sessionCookie(`${SESSION_COOKIE}=${token}; Max-Age=${SESSION_DAYS * 86400}`));
     sendJson(res, 200, { authenticated: true });
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/auth/discord/start") {
+    const oauthConfig = loadDiscordOAuthConfig();
+    if (!oauthConfig) throw new HttpError(503, "Discord OAuth non configuré sur ce serveur.");
+    const state = generateOAuthState();
+    const cookies = [stateCookie(`${OAUTH_STATE_COOKIE}=${state}; Max-Age=${OAUTH_STATE_TTL_SEC}`)];
+    res.setHeader("set-cookie", cookies);
+    sendRedirect(res, buildAuthorizeUrl(oauthConfig, state));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/discord/callback") {
+    const oauthConfig = loadDiscordOAuthConfig();
+    if (!oauthConfig) throw new HttpError(503, "Discord OAuth non configuré sur ce serveur.");
+    const code = url.searchParams.get("code") ?? "";
+    const state = url.searchParams.get("state") ?? "";
+    const cookieState = readCookie(req, OAUTH_STATE_COOKIE);
+    // Clear the state cookie regardless of outcome
+    const clearState = stateCookie(`${OAUTH_STATE_COOKIE}=; Max-Age=0`);
+    if (!code) {
+      res.setHeader("set-cookie", clearState);
+      throw new HttpError(400, "Code OAuth manquant");
+    }
+    if (!state || !cookieState || state !== cookieState) {
+      res.setHeader("set-cookie", clearState);
+      throw new HttpError(400, "État OAuth invalide (CSRF)");
+    }
+    const accessToken = await exchangeCodeForToken(oauthConfig, code);
+    const profile = await fetchDiscordProfile(accessToken);
+    const user = await dashboardStore.upsertUserFromDiscord(profile);
+    if (user.plan !== "admin" && !isBetaAllowed(user.discordId)) {
+      res.setHeader("set-cookie", clearState);
+      sendRedirect(res, "/?beta=denied");
+      return;
+    }
+    const token = randomBytes(32).toString("base64url");
+    await dashboardStore.createSession(
+      hashToken(token),
+      sessionDate(new Date(Date.now() + SESSION_DAYS * 864e5)),
+      user.id
+    );
+    res.setHeader("set-cookie", [
+      clearState,
+      sessionCookie(`${SESSION_COOKIE}=${token}; Max-Age=${SESSION_DAYS * 86400}`)
+    ]);
+    sendRedirect(res, "/");
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/auth/me") {
-    sendJson(res, 200, { authenticated: await authenticate(req, dashboardStore) });
+    const token = sessionToken(req);
+    const userId = token ? await dashboardStore.getSessionUser(hashToken(token)) : null;
+    if (!userId) {
+      sendJson(res, 200, { authenticated: false });
+      return;
+    }
+    const user = await dashboardStore.getUserById(userId);
+    if (!user) {
+      sendJson(res, 200, { authenticated: false });
+      return;
+    }
+    sendJson(res, 200, {
+      authenticated: true,
+      user: {
+        id: user.id,
+        discordId: user.discordId,
+        username: user.discordUsername,
+        avatar: user.discordAvatar,
+        plan: user.plan
+      }
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/healthz") {
+    sendJson(res, 200, { ok: true });
     return;
   }
 
@@ -318,19 +411,23 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-async function authenticate(req: IncomingMessage, store: DashboardStore): Promise<boolean> {
-  const token = sessionToken(req);
-  return Boolean(token && (await store.validateSession(hashToken(token))));
+function sendRedirect(res: ServerResponse, location: string): void {
+  res.writeHead(302, { location, "cache-control": "no-store" });
+  res.end();
 }
 
 function sessionToken(req: IncomingMessage): string | undefined {
+  return readCookie(req, SESSION_COOKIE);
+}
+
+function readCookie(req: IncomingMessage, name: string): string | undefined {
   const cookies = req.headers.cookie?.split(";") ?? [];
   for (const cookie of cookies) {
     const separator = cookie.indexOf("=");
     if (separator === -1) continue;
     const key = cookie.slice(0, separator).trim();
     const value = cookie.slice(separator + 1).trim();
-    if (key === SESSION_COOKIE) return value;
+    if (key === name) return value;
   }
   return undefined;
 }
@@ -342,6 +439,13 @@ function hashToken(token: string): string {
 function sessionCookie(value: string): string {
   const secure = process.env.DASHBOARD_COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
   return `${value}; HttpOnly; SameSite=Lax; Path=/${secure ? "; Secure" : ""}`;
+}
+
+function stateCookie(value: string): string {
+  // Short-lived (10 min), HttpOnly, SameSite=Lax so it survives the Discord
+  // redirect roundtrip. Path=/api/auth keeps it scoped to the OAuth dance.
+  const secure = process.env.DASHBOARD_COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
+  return `${value}; HttpOnly; SameSite=Lax; Path=/api/auth${secure ? "; Secure" : ""}`;
 }
 
 function safePasswordEquals(input: string, expected: string): boolean {
