@@ -54,7 +54,7 @@ export default function Dashboard() {
   const alertsCount  = deals.filter((d) => d.sent).length;
   const pendingCount = deals.filter((d) => d.shouldAlert && !d.sent).length;
   const scansCount   = scans.length;
-  const itemsTotal   = scans.reduce((s, r) => s + (r.itemsFound ?? 0), 0);
+  const itemsTotal   = scans.reduce((s, r) => s + (r.listings ?? 0), 0);
   const itemsFmt     = itemsTotal >= 1000 ? (itemsTotal / 1000).toFixed(1) + "k" : String(itemsTotal);
   const avgScore     = deals.length ? Math.round(deals.reduce((s, d) => s + (d.score ?? 0), 0) / deals.length) : 0;
   const alertRate    = deals.length ? Math.round((alertsCount / deals.length) * 100) : 0;
@@ -70,7 +70,7 @@ export default function Dashboard() {
     const ageStart = (7 - i) * 3600000;
     const ageEnd   = (8 - i) * 3600000;
     return deals.filter((d) => {
-      const age = now - new Date(d.seenAt ?? d.createdAt ?? 0).getTime();
+      const age = now - new Date(d.createdAt ?? 0).getTime();
       return age >= ageStart && age < ageEnd;
     }).length;
   });
@@ -86,7 +86,7 @@ export default function Dashboard() {
   });
   const dealCounts = Array(24).fill(0);
   deals.forEach((d) => {
-    const age = (now - new Date(d.seenAt ?? d.createdAt ?? 0).getTime()) / 3600000;
+    const age = (now - new Date(d.createdAt ?? 0).getTime()) / 3600000;
     if (age >= 0 && age < 24) dealCounts[23 - Math.min(23, Math.floor(age))]++;
   });
   const SCRAPING_SERIES = [
