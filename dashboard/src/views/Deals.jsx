@@ -4,6 +4,51 @@ import { eur, filterLabel, translateReason } from "../format.js";
 import { ScoreBadge, RiskBadge, StatusBadge } from "../components/ScoreBadge.jsx";
 import Empty from "../components/Empty.jsx";
 
+const BRAND_MAP = {
+  apple:    { slug: "apple",    bg: "bg-dark"    },
+  samsung:  { slug: "samsung",  bg: "bg-primary" },
+  google:   { slug: "google",   bg: "bg-info"    },
+  oneplus:  { slug: "oneplus",  bg: "bg-danger"  },
+  xiaomi:   { slug: "xiaomi",   bg: "bg-warning" },
+  sony:     { slug: "sony",     bg: "bg-dark"    },
+  motorola: { slug: "motorola", bg: "bg-danger"  },
+  nokia:    { slug: "nokia",    bg: "bg-primary" },
+  huawei:   { slug: "huawei",   bg: "bg-danger"  },
+  oppo:     { slug: "oppo",     bg: "bg-success" },
+};
+
+function brandFromTitle(text = "") {
+  const t = text.toLowerCase();
+  if (t.includes("iphone") || t.includes("apple"))              return "apple";
+  if (t.includes("samsung") || t.includes("galaxy"))            return "samsung";
+  if (t.includes("pixel") || t.includes("google"))              return "google";
+  if (t.includes("oneplus") || t.includes("one plus"))          return "oneplus";
+  if (t.includes("xiaomi") || t.includes("redmi") || t.includes("poco")) return "xiaomi";
+  if (t.includes("sony") || t.includes("xperia"))               return "sony";
+  if (t.includes("motorola") || t.includes("moto "))            return "motorola";
+  if (t.includes("nokia"))                                       return "nokia";
+  if (t.includes("huawei"))                                      return "huawei";
+  if (t.includes("oppo"))                                        return "oppo";
+  return null;
+}
+
+function BrandIcon({ title = "", model = "" }) {
+  const brand = brandFromTitle(title) ?? brandFromTitle(model);
+  const info = brand ? BRAND_MAP[brand] : null;
+  if (info) {
+    return (
+      <div className={`${info.bg} rounded-circle round-40 d-flex align-items-center justify-content-center flex-shrink-0`}>
+        <img src={`https://cdn.simpleicons.org/${info.slug}/ffffff`} alt={brand} width="20" height="20" />
+      </div>
+    );
+  }
+  return (
+    <div className="bg-primary-subtle rounded-circle round-40 d-flex align-items-center justify-content-center flex-shrink-0">
+      <iconify-icon icon="solar:smartphone-2-line-duotone" class="text-primary fs-5"></iconify-icon>
+    </div>
+  );
+}
+
 export default function Deals() {
   const { deals } = useApp();
   const [filter, setFilter] = useState("all");
@@ -72,9 +117,7 @@ export default function Deals() {
                     <tr key={deal.id}>
                       <td>
                         <div className="d-flex align-items-center gap-3">
-                          <div className="bg-primary-subtle rounded-circle round-40 d-flex align-items-center justify-content-center">
-                            <iconify-icon icon="solar:smartphone-2-line-duotone" class="text-primary fs-5"></iconify-icon>
-                          </div>
+                          <BrandIcon title={deal.title} model={deal.model} />
                           <div>
                             <h6 className="mb-0 fs-3 fw-semibold">{deal.model}{deal.storageGb ? ` ${deal.storageGb} Go` : ""}</h6>
                             <span className="fs-2 text-muted text-truncate d-inline-block" style={{ maxWidth: "280px" }}>{deal.title}</span>

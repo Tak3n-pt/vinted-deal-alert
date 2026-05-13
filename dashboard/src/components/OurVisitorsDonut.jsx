@@ -18,7 +18,7 @@ export default function OurVisitorsDonut({ series = [50, 40, 30, 10], labels = [
             show: true,
             name: { show: true, offsetY: 7 },
             value: { show: false },
-            total: { show: true, color: "#a1aab2", fontSize: "13px", label: "Our Visitor" }
+            total: { show: true, color: "#a1aab2", fontSize: "13px", label: "Deals" }
           }
         }
       }
