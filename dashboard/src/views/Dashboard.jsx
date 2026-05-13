@@ -1,429 +1,437 @@
-import React, { useMemo } from "react";
-import { useApp } from "../AppContext.jsx";
-import { api } from "../api.js";
-import { eur, dateTimeShort, duration, botStateLabel, tStatus, tSource, translateReason, timeShort } from "../format.js";
-import StatCard from "../components/StatCard.jsx";
+// 1:1 visual clone of MaterialPro horizontal/index3 dashboard body.
+// All values are mock data taken verbatim from the demo so the layout
+// renders identically. Real bot data lives in /Statistiques and other views.
+
+import React from "react";
+import Sparkline from "../components/Sparkline.jsx";
+import Breadbar from "../components/Breadbar.jsx";
 import AreaChart from "../components/AreaChart.jsx";
-import Donut from "../components/Donut.jsx";
-import ActivityTimeline from "../components/ActivityTimeline.jsx";
-import { ScoreBadge, RiskBadge, StatusBadge } from "../components/ScoreBadge.jsx";
-import Empty from "../components/Empty.jsx";
-import WebhookOnboarding from "../components/WebhookOnboarding.jsx";
+import OurVisitorsDonut from "../components/OurVisitorsDonut.jsx";
+import MiniLineChart from "../components/MiniLineChart.jsx";
+import MiniBarChart from "../components/MiniBarChart.jsx";
+
+// Mock data exactly matches the MaterialPro demo's dashboard3.js / breadcrumbChart.js.
+const NEWSLETTER_CATEGORIES = ["", "8 AM", "81 AM", "9 AM", "10 AM", "11 AM", "12 PM", "13 PM", "14 PM", "15 PM", "16 PM", "17 PM", "18 PM", "18:20 PM", "18:20 PM", "19 PM", "20 PM", "21 PM", ""];
+const NEWSLETTER_SERIES = [
+  { name: "Inbound Calls", data: [65, 80, 80, 60, 60, 45, 45, 80, 80, 70, 70, 90, 90, 80, 80, 80, 60, 60, 50] },
+  { name: "Outbound Calls", data: [90, 110, 110, 95, 95, 85, 85, 95, 95, 115, 115, 100, 100, 115, 115, 95, 95, 85, 85] }
+];
 
 export default function Dashboard() {
-  const {
-    status,
-    settings,
-    searches,
-    modelRules,
-    deals,
-    scans,
-    logs,
-    userSettings,
-    currentUser,
-    runAction,
-    refreshAll,
-    loading
-  } = useApp();
-
-  const metrics = useMemo(() => buildMetrics(scans, deals), [scans, deals]);
-  const distribution = useMemo(() => buildScoreDistribution(deals), [deals]);
-  const hourly = useMemo(() => buildHourlyChart(scans), [scans]);
-  const topSearches = useMemo(() => buildTopSearches(searches, scans), [searches, scans]);
-
-  const activeSearches = searches.filter((s) => s.enabled).length;
-  const enabledModels = modelRules.filter((r) => r.enabled).length;
-  const sentToday = deals.filter((d) => d.sent).length;
-  const alertable = deals.filter((d) => d.shouldAlert).length;
-  const recentDeals = deals.slice(0, 8);
-
   return (
     <>
-      {/* --- Breadcrumb --- */}
+      {/* Breadcrumb */}
       <div className="font-weight-medium shadow-none position-relative overflow-hidden mb-7">
         <div className="card-body px-0">
-          <div className="d-flex justify-content-between align-items-center flex-wrap gap-3">
+          <div className="d-flex justify-content-between align-items-center">
             <div>
-              <h4 className="font-weight-medium mb-0">Tableau de bord</h4>
+              <h4 className="font-weight-medium mb-0">Dashboard</h4>
               <nav aria-label="breadcrumb">
                 <ol className="breadcrumb">
-                  <li className="breadcrumb-item"><a className="text-muted text-decoration-none" href="#">Bonoitec Flash</a></li>
-                  <li className="breadcrumb-item text-muted" aria-current="page">Tableau de bord</li>
+                  <li className="breadcrumb-item"><a className="text-muted text-decoration-none" href="#" onClick={(e) => e.preventDefault()}>Home</a></li>
+                  <li className="breadcrumb-item text-muted" aria-current="page">Dashboard</li>
                 </ol>
               </nav>
             </div>
-            <div className="d-flex gap-2 flex-wrap">
-              <button
-                className="btn btn-outline-secondary d-flex align-items-center gap-1"
-                onClick={refreshAll}
-                disabled={loading}
-              >
-                <iconify-icon icon="solar:refresh-line-duotone"></iconify-icon>
-                Actualiser
-              </button>
-              <button
-                className="btn btn-primary d-flex align-items-center gap-1"
-                onClick={() => runAction("Scan lancé", () => api("/api/bot/scan-now", { method: "POST" }))}
-                disabled={loading}
-              >
-                <iconify-icon icon="solar:rocket-line-duotone"></iconify-icon>
-                Scanner maintenant
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* --- Webhook onboarding --- */}
-      {userSettings && !userSettings.discordWebhookConfigured ? (
-        <WebhookOnboarding onSaved={() => refreshAll()} />
-      ) : null}
-
-      {/* --- Hero + KPI grid --- */}
-      <div className="row">
-        {/* Hero welcome (col-lg-5): mimics MP's "Upgrade Plan" promo card */}
-        <div className="col-lg-5 col-md-12">
-          <div className="card bonoitec-hero h-100">
-            <div className="card-body p-7 d-flex flex-column h-100 position-relative">
-              <div className="d-flex align-items-center gap-3 mb-3">
-                <div className="hero-icon">
-                  <iconify-icon icon="solar:rocket-line-duotone" style={{ fontSize: 36, color: "#fff" }}></iconify-icon>
-                </div>
-                <div>
-                  <p className="mb-0 fs-3 opacity-75">Bonjour {currentUser?.username ? currentUser.username : "👋"}</p>
-                  <h4 className="mb-0 text-white fw-bold">Bonoitec Flash veille pour toi</h4>
-                </div>
-              </div>
-              <p className="fs-3 opacity-75 mb-4">
-                {sentToday} alerte{sentToday > 1 ? "s" : ""} envoyée{sentToday > 1 ? "s" : ""} aujourd'hui · {metrics.totalListings.toLocaleString("fr-FR")} annonces analysées · {activeSearches} recherches actives
-              </p>
-              <div className="d-flex gap-2 mt-auto flex-wrap">
-                <button
-                  className="btn btn-light d-flex align-items-center gap-1 fw-semibold"
-                  onClick={() => runAction("Scan lancé", () => api("/api/bot/scan-now", { method: "POST" }))}
-                  disabled={loading}
-                >
-                  <iconify-icon icon="solar:play-line-duotone"></iconify-icon>
-                  Scanner maintenant
-                </button>
-                <button
-                  className="btn btn-outline-light d-flex align-items-center gap-1"
-                  onClick={() =>
-                    runAction(
-                      status?.paused ? "Bot relancé" : "Bot mis en pause",
-                      () => api(status?.paused ? "/api/bot/resume" : "/api/bot/pause", { method: "POST" })
-                    )
-                  }
-                  disabled={loading}
-                >
-                  <iconify-icon icon={status?.paused ? "solar:play-line-duotone" : "solar:pause-line-duotone"}></iconify-icon>
-                  {status?.paused ? "Reprendre" : "Mettre en pause"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* 2×2 KPI grid (col-lg-7): mimics MP's 4-up KPI tiles */}
-        <div className="col-lg-7 col-md-12">
-          <div className="row">
-            <div className="col-md-6 mb-4">
-              <StatCard
-                label="Alertes envoyées"
-                value={sentToday}
-                sub={`${alertable} opportunités alertables`}
-                color="primary"
-                variant="filled"
-                icon="solar:bell-bing-line-duotone"
-                sparklineData={metrics.sentHistory}
-              />
-            </div>
-            <div className="col-md-6 mb-4">
-              <StatCard
-                label="État du bot"
-                value={botStateLabel(status)}
-                sub={settings?.dryRun ? "Simulation active" : "Alertes Discord actives"}
-                color={status?.paused ? "warning" : "success"}
-                icon="solar:wifi-router-line-duotone"
-                sparklineData={metrics.scanHistory}
-              />
-            </div>
-            <div className="col-md-6">
-              <StatCard
-                label="Annonces (24 h)"
-                value={metrics.totalListings.toLocaleString("fr-FR")}
-                sub={`${metrics.scanCount} scans · moy ${metrics.avgListings}/scan`}
-                color="secondary"
-                variant="filled"
-                icon="solar:eye-scan-line-duotone"
-                sparklineData={metrics.listingsHistory}
-              />
-            </div>
-            <div className="col-md-6">
-              <StatCard
-                label="Couverture"
-                value={`${enabledModels} modèles`}
-                sub={`${activeSearches} recherches actives`}
-                color="info"
-                icon="solar:smartphone-2-line-duotone"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* --- Control strip --- */}
-      <div className="card overflow-hidden mb-4">
-        <div className="card-body p-4">
-          <div className="row g-3 align-items-center">
-            <div className="col-lg col-md-6 col-6">
-              <span className="fs-2 text-muted d-block">Prochain scan</span>
-              <strong className="fs-4">{status?.nextScanAt ? dateTimeShort(status.nextScanAt) : "Non planifié"}</strong>
-            </div>
-            <div className="col-lg col-md-6 col-6">
-              <span className="fs-2 text-muted d-block">Intervalle</span>
-              <strong className="fs-4">{duration(settings?.pollIntervalSeconds ?? 0)}</strong>
-            </div>
-            <div className="col-lg col-md-6 col-6">
-              <span className="fs-2 text-muted d-block">Heures calmes</span>
-              <strong className="fs-4">{settings?.quietHoursEnabled ? `${settings.quietHoursStart}–${settings.quietHoursEnd}` : "Désactivées"}</strong>
-            </div>
-            <div className="col-lg col-md-6 col-6">
-              <span className="fs-2 text-muted d-block">Plafond / 24 h</span>
-              <strong className="fs-4">{settings?.maxAlertsPerDay > 0 ? `${settings.maxAlertsPerDay} alertes` : "Sans limite"}</strong>
-            </div>
-            <div className="col-lg-auto col-12 d-flex gap-2 justify-content-end">
-              <button
-                className="btn btn-outline-primary d-flex align-items-center gap-1"
-                onClick={() =>
-                  runAction(
-                    status?.paused ? "Bot relancé" : "Bot mis en pause",
-                    () => api(status?.paused ? "/api/bot/resume" : "/api/bot/pause", { method: "POST" })
-                  )
-                }
-                disabled={loading}
-              >
-                <iconify-icon icon={status?.paused ? "solar:play-line-duotone" : "solar:pause-line-duotone"}></iconify-icon>
-                {status?.paused ? "Reprendre" : "Mettre en pause"}
-              </button>
-              <button
-                className="btn btn-outline-secondary d-flex align-items-center gap-1"
-                onClick={() => runAction("Message Discord envoyé", () => api("/api/discord/test", { method: "POST" }))}
-                disabled={loading}
-              >
-                <iconify-icon icon="solar:plain-2-line-duotone"></iconify-icon>
-                Tester Discord
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* --- Charts row --- */}
-      <div className="row">
-        <div className="col-lg-8">
-          <div className="card">
-            <div className="card-body">
-              <div className="d-flex align-items-center justify-content-between mb-3">
-                <div>
-                  <h5 className="card-title mb-0 fw-semibold">Activité du bot</h5>
-                  <span className="fs-3 text-muted">Annonces & alertes sur les dernières 24 heures</span>
-                </div>
-                <div className="d-flex align-items-center gap-3">
-                  <span className="d-flex align-items-center gap-1 fs-3"><span className="bg-primary rounded-circle d-inline-block" style={{ width: 8, height: 8 }}></span> Annonces</span>
-                  <span className="d-flex align-items-center gap-1 fs-3"><span className="bg-secondary rounded-circle d-inline-block" style={{ width: 8, height: 8 }}></span> Alertes</span>
-                </div>
-              </div>
-              {hourly.series[0].data.some((v) => v > 0) ? (
-                <AreaChart categories={hourly.categories} series={hourly.series} />
-              ) : (
-                <Empty text="Aucun scan dans les dernières 24 heures" />
-              )}
-            </div>
-          </div>
-        </div>
-        <div className="col-lg-4">
-          <div className="card h-100">
-            <div className="card-body">
-              <h5 className="card-title mb-1 fw-semibold">Score des opportunités</h5>
-              <span className="fs-3 text-muted d-block mb-3">Répartition par tranche de score</span>
-              {distribution.total > 0 ? (
-                <>
-                  <Donut
-                    labels={["Excellent (≥88)", "Bon (82–87)", "Limite (<82)"]}
-                    series={[distribution.good, distribution.medium, distribution.low]}
-                    colors={["var(--bs-primary)", "var(--bs-secondary)", "var(--bs-warning)"]}
-                    totalLabel="Opportunités"
-                  />
-                  <div className="mt-3">
-                    <DistRow label="Excellent (≥88)" count={distribution.good} total={distribution.total} tone="primary" />
-                    <DistRow label="Bon (82–87)" count={distribution.medium} total={distribution.total} tone="secondary" />
-                    <DistRow label="Limite (<82)" count={distribution.low} total={distribution.total} tone="warning" />
+            <div>
+              <div className="d-sm-flex d-none gap-3 no-block justify-content-end align-items-center">
+                <div className="d-flex gap-2 align-items-center">
+                  <div>
+                    <small>This Month</small>
+                    <h4 className="text-primary mb-0">$58,256</h4>
                   </div>
-                </>
-              ) : (
-                <Empty text="Pas encore d'opportunités scorées" />
-              )}
+                  <div className="breadbar"><Breadbar color="primary" /></div>
+                </div>
+                <div className="d-flex gap-2 align-items-center">
+                  <div>
+                    <small>Last Month</small>
+                    <h4 className="text-secondary mb-0">$58,256</h4>
+                  </div>
+                  <div className="breadbar2"><Breadbar color="secondary" /></div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* --- Recent deals + top searches --- */}
       <div className="row">
-        <div className="col-lg-8">
-          <div className="card">
-            <div className="card-body">
-              <div className="d-flex align-items-center justify-content-between mb-3">
-                <h5 className="card-title mb-0 fw-semibold">Dernières opportunités</h5>
-                <span className="fs-3 text-muted">{recentDeals.length} dernières</span>
-              </div>
-              {recentDeals.length === 0 ? (
-                <Empty text="Aucune opportunité encore détectée" />
-              ) : (
-                <div className="table-responsive">
-                  <table className="table table-hover align-middle">
-                    <thead>
-                      <tr className="text-uppercase fs-2 text-muted">
-                        <th>Produit</th>
-                        <th>Prix final</th>
-                        <th>Remise</th>
-                        <th>Score</th>
-                        <th>Risque</th>
-                        <th>Statut</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {recentDeals.map((deal) => (
-                        <tr key={deal.id}>
-                          <td>
-                            <div className="d-flex align-items-center gap-3">
-                              <div className="bg-primary-subtle rounded-circle round-40 d-flex align-items-center justify-content-center">
-                                <iconify-icon icon="solar:smartphone-2-line-duotone" class="text-primary fs-5"></iconify-icon>
-                              </div>
-                              <div>
-                                <h6 className="mb-0 fs-3 fw-semibold">
-                                  {deal.model ?? "Modèle inconnu"}{deal.storageGb ? ` ${deal.storageGb} Go` : ""}
-                                </h6>
-                                <span className="fs-2 text-muted text-truncate d-inline-block" style={{ maxWidth: "240px" }}>{deal.title}</span>
-                              </div>
-                            </div>
-                          </td>
-                          <td><strong>{eur(deal.finalPrice)}</strong></td>
-                          <td>
-                            <span className="fw-semibold">{Math.round((deal.discountPercent ?? 0) * 100)}%</span>
-                            <span className="fs-2 text-muted ms-1">{eur(deal.savings ?? 0)}</span>
-                          </td>
-                          <td><ScoreBadge score={deal.score ?? 0} /></td>
-                          <td><RiskBadge level={deal.riskLevel ?? "clean"} /></td>
-                          <td>
-                            {deal.sent ? (
-                              <StatusBadge tone="success">envoyé</StatusBadge>
-                            ) : deal.shouldAlert ? (
-                              <StatusBadge tone="primary">alertable</StatusBadge>
-                            ) : (
-                              <StatusBadge tone="secondary">{translateReason(deal.rejectionReasons?.[0] ?? "rejeté")}</StatusBadge>
-                            )}
-                          </td>
-                          <td className="text-end">
-                            <a href={deal.url} target="_blank" rel="noreferrer" className="btn btn-outline-primary btn-sm p-1 d-inline-flex align-items-center" title="Ouvrir sur Vinted">
-                              <iconify-icon icon="solar:arrow-right-up-line-duotone"></iconify-icon>
-                            </a>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+        {/* First column — Online Revenue + Ad. Expense + Upgrade Plan */}
+        <div className="col-lg-5">
+          <div className="row">
+            <div className="col-md-6">
+              <div className="card">
+                <div className="card-body p-9">
+                  <p className="card-subtitle">Online Revenue</p>
+                  <h4 className="card-title mb-1">$2376</h4>
+                  <div id="online-revenue">
+                    <Sparkline data={[0, 150, 110, 240, 200, 200, 300, 200]} color="secondary" height={64} />
+                  </div>
                 </div>
-              )}
+              </div>
+            </div>
+            <div className="col-md-6">
+              <div className="card overflow-hidden">
+                <div className="card-body bg-secondary text-center">
+                  <div className="my-2">
+                    <h6 className="text-white">Ad. Expense</h6>
+                    <h2 className="mb-0 text-white" style={{ fontSize: "2.2rem" }}>12.5m</h2>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="card bonoitec-upgrade-plan">
+            <div className="card-body position-relative z-1 p-7">
+              <p className="text-white mb-1 opacity-75">Grab the top deal.</p>
+              <h3 className="text-white fw-semibold mb-0">Upgrade Plan</h3>
+              <div className="d-flex gap-9 my-4 pb-2">
+                <div className="d-flex align-items-center gap-2">
+                  <div className="round-36 bg-white bg-opacity-25 rounded-circle d-flex align-items-center justify-content-center">
+                    <iconify-icon icon="solar:user-line-duotone" class="fs-5 text-white"></iconify-icon>
+                  </div>
+                  <div>
+                    <p className="mb-0 fs-2 text-white text-opacity-75">Team</p>
+                    <h6 className="mb-0 fs-2 text-white fw-semibold">Up to 240</h6>
+                  </div>
+                </div>
+                <div className="d-flex align-items-center gap-2">
+                  <div className="round-36 bg-white bg-opacity-25 rounded-circle d-flex align-items-center justify-content-center">
+                    <iconify-icon icon="solar:graph-up-line-duotone" class="fs-5 text-white"></iconify-icon>
+                  </div>
+                  <div>
+                    <p className="mb-0 fs-2 text-white text-opacity-75">Progress</p>
+                    <h6 className="mb-0 fs-2 text-white fw-semibold">Almost 85%</h6>
+                  </div>
+                </div>
+              </div>
+              <a href="#" onClick={(e) => e.preventDefault()} className="btn btn-primary bg-white bg-opacity-25 border-0 text-white">Upgrade Plan</a>
             </div>
           </div>
         </div>
+
+        {/* Second column — Material Pro video card */}
         <div className="col-lg-4">
-          <div className="card h-100">
+          <div className="card bonoitec-materialpro-bg shadow-none h-100">
+            <div className="card-body p-4 d-flex align-items-center justify-content-center h-100">
+              <div className="d-flex align-items-center gap-3">
+                <button type="button" className="btn p-0 round-60 bg-white rounded-circle d-flex align-items-center justify-content-center" style={{ width: 60, height: 60 }}>
+                  <iconify-icon icon="solar:play-bold" class="fs-6 text-dark"></iconify-icon>
+                </button>
+                <div>
+                  <h4 className="mb-2 card-title text-dark">Material Pro</h4>
+                  <p className="card-subtitle">The real story</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Third column — Highlights + Design Meetings */}
+        <div className="col-lg-3">
+          <div className="card">
+            <div className="card-body p-7">
+              <h3 className="card-title mb-3">Highlights</h3>
+              <div className="d-flex justify-content-between align-items-center gap-6 py-3 border-bottom">
+                <h6 className="mb-0">Daily Sales</h6>
+                <div className="d-flex align-items-center gap-2">
+                  <iconify-icon icon="solar:arrow-right-up-linear" class="fs-6 text-secondary"></iconify-icon>
+                  <h6 className="mb-0">488</h6>
+                </div>
+              </div>
+              <div className="d-flex justify-content-between align-items-center gap-6 py-3 border-bottom">
+                <h6 className="mb-0">Avg. Clients</h6>
+                <div className="d-flex align-items-center gap-2">
+                  <iconify-icon icon="solar:arrow-right-up-linear" class="fs-6 text-danger"></iconify-icon>
+                  <h6 className="mb-0">400</h6>
+                </div>
+              </div>
+              <div className="d-flex justify-content-between align-items-center gap-6 py-3">
+                <h6 className="mb-0">Pending Tasks</h6>
+                <div className="d-flex align-items-center gap-2">
+                  <iconify-icon icon="solar:arrow-left-down-linear" class="fs-6 text-secondary"></iconify-icon>
+                  <h6 className="mb-0">4.3 <span className="text-muted">/37</span></h6>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="card overflow-hidden">
+            <div className="card-body bonoitec-bg-purple p-7">
+              <h3 className="card-title mb-2 text-white">Design Meetings</h3>
+              <p className="card-subtitle text-white opacity-75 pb-2">2 Hours Left</p>
+              <div className="d-flex justify-content-between align-items-center mt-3">
+                <ul className="d-flex list-unstyled mb-0">
+                  <li>
+                    <img src="/assets/images/profile/user-2.jpg" className="rounded-circle border border-2" width="40" height="40" alt="" style={{ borderColor: "#5e35b1" }} />
+                  </li>
+                  <li style={{ marginLeft: -8 }}>
+                    <img src="/assets/images/profile/user-9.jpg" className="rounded-circle border border-2" width="40" height="40" alt="" style={{ borderColor: "#5e35b1" }} />
+                  </li>
+                  <li style={{ marginLeft: -8 }}>
+                    <span className="bg-dark text-white fs-2 rounded-circle border border-2 d-flex align-items-center justify-content-center" style={{ width: 40, height: 40, borderColor: "#5e35b1" }}>
+                      +54
+                    </span>
+                  </li>
+                </ul>
+                <div className="d-flex align-items-center justify-content-center rounded-circle bg-warning" style={{ width: 40, height: 40 }}>
+                  <iconify-icon icon="solar:arrow-right-up-linear" class="fs-6 text-white"></iconify-icon>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Newsletter Campaign */}
+        <div className="col-lg-8">
+          <div className="card">
             <div className="card-body">
-              <h5 className="card-title mb-1 fw-semibold">Recherches actives</h5>
-              <span className="fs-3 text-muted d-block mb-3">Top par activité récente</span>
-              {topSearches.length === 0 ? (
-                <Empty text="Aucune recherche active" />
-              ) : (
-                <ul className="list-unstyled mb-0">
-                  {topSearches.map((search) => (
-                    <li key={search.id} className="d-flex align-items-center gap-3 mb-4 pb-3 border-bottom">
-                      <div className="bg-info-subtle rounded-circle round-40 d-flex align-items-center justify-content-center flex-shrink-0">
-                        <iconify-icon icon="solar:magnifer-line-duotone" class="text-info fs-5"></iconify-icon>
-                      </div>
-                      <div className="flex-grow-1">
-                        <div className="d-flex justify-content-between align-items-center mb-1">
-                          <h6 className="mb-0 fs-3 fw-semibold text-truncate" style={{ maxWidth: "160px" }}>{search.query}</h6>
-                          <span className="fs-2 text-muted">{search.limit}/scan</span>
-                        </div>
-                        <div className="progress" style={{ height: 6 }}>
-                          <div
-                            className={`progress-bar bg-${search.enabled ? "primary" : "secondary"}`}
-                            role="progressbar"
-                            style={{ width: `${search.enabled ? 80 : 20}%` }}
-                          ></div>
-                        </div>
+              <div className="d-flex align-items-center flex-wrap mb-4">
+                <div>
+                  <h4 className="card-title">Newsletter Campaign</h4>
+                  <p className="card-subtitle mb-0">Overview of Newsletter Campaign</p>
+                </div>
+                <div className="ms-auto align-self-center">
+                  <ul className="d-flex align-items-center gap-3 mb-0 list-unstyled">
+                    <li className="d-flex">
+                      <div className="text-primary d-flex align-items-center gap-2 fs-3">
+                        <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Open Rate
                       </div>
                     </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* --- Scans + Activity timeline --- */}
-      <div className="row">
-        <div className="col-lg-6">
-          <div className="card">
-            <div className="card-body">
-              <h5 className="card-title mb-1 fw-semibold">Derniers scans</h5>
-              <span className="fs-3 text-muted d-block mb-3">Résultats des dernières exécutions</span>
-              {scans.length === 0 ? (
-                <Empty text="Aucun scan" />
-              ) : (
-                <div className="table-responsive">
-                  <table className="table align-middle mb-0">
-                    <thead>
-                      <tr className="text-uppercase fs-2 text-muted">
-                        <th>Statut</th>
-                        <th>Source</th>
-                        <th>Annonces</th>
-                        <th>Alertes</th>
-                        <th>Début</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {scans.slice(0, 6).map((scan) => (
-                        <tr key={scan.id}>
-                          <td>
-                            <StatusBadge tone={scan.status === "success" ? "success" : scan.status === "failed" ? "danger" : "secondary"}>
-                              {tStatus(scan.status)}
-                            </StatusBadge>
-                          </td>
-                          <td className="fs-3">{tSource(scan.source)}</td>
-                          <td className="fs-3 fw-semibold">{scan.listings}</td>
-                          <td className="fs-3"><span className="text-primary fw-semibold">{scan.sent}</span><span className="text-muted">/{scan.alertable}</span></td>
-                          <td className="fs-3 text-muted">{dateTimeShort(scan.startedAt)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                    <li className="d-flex">
+                      <div className="text-secondary d-flex align-items-center gap-2 fs-3">
+                        <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Recurring Payments
+                      </div>
+                    </li>
+                  </ul>
                 </div>
-              )}
+              </div>
+              <div id="newsletter-campaign">
+                <AreaChart categories={NEWSLETTER_CATEGORIES} series={NEWSLETTER_SERIES} height={267} />
+              </div>
+              <div className="row text-center">
+                <div className="col-lg-4 col-md-4 mt-4">
+                  <h2 className="mb-0">5098</h2>
+                  <small className="fs-3 text-muted">Total Sent</small>
+                </div>
+                <div className="col-lg-4 col-md-4 mt-4">
+                  <h2 className="mb-0">4156</h2>
+                  <small className="fs-3 text-muted">Mail Open Rate</small>
+                </div>
+                <div className="col-lg-4 col-md-4 mt-4">
+                  <h2 className="mb-0">1369</h2>
+                  <small className="fs-3 text-muted">Click Rate</small>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        <div className="col-lg-6">
+
+        {/* My Contacts */}
+        <div className="col-lg-4">
+          <div className="card">
+            <div className="card-body pb-0">
+              <h4 className="card-title">My Contacts</h4>
+              <p className="card-subtitle mb-0">Checkout my contacts here</p>
+            </div>
+            <div className="mt-3">
+              {CONTACTS.map((c, i) => (
+                <a href="#" onClick={(e) => e.preventDefault()} className="py-3 d-flex px-7 gap-3 text-decoration-none align-items-center" key={i}>
+                  <div className="position-relative flex-shrink-0">
+                    <img src={c.img} alt="user" className="rounded-circle" width="50" height="50" />
+                    <span
+                      className="d-inline-block position-absolute rounded-circle"
+                      style={{ background: c.status === "online" ? "#26c6da" : "#5e35b1", width: 12, height: 12, bottom: 0, right: 0, border: "2px solid #fff" }}
+                    ></span>
+                  </div>
+                  <div className="d-flex align-items-center w-100">
+                    <div className="text-truncate flex-grow-1">
+                      <h5 className="mb-1 text-dark fw-medium">{c.name}</h5>
+                      <span className="text-muted fs-3">{c.msg}</span>
+                    </div>
+                    <div className="d-flex gap-1 ms-auto">
+                      <button type="button" className="btn btn-sm bg-danger-subtle text-danger rounded-pill d-inline-flex align-items-center justify-content-center" style={{ width: 32, height: 32 }}>
+                        <iconify-icon icon="solar:videocamera-line-duotone"></iconify-icon>
+                      </button>
+                      <button type="button" className="btn btn-sm bg-primary-subtle text-primary rounded-pill d-inline-flex align-items-center justify-content-center" style={{ width: 32, height: 32 }}>
+                        <iconify-icon icon="solar:phone-calling-line-duotone"></iconify-icon>
+                      </button>
+                    </div>
+                  </div>
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Current Visitors */}
+        <div className="col-lg-4">
           <div className="card">
             <div className="card-body">
-              <h5 className="card-title mb-1 fw-semibold">Activité récente</h5>
-              <span className="fs-3 text-muted d-block mb-3">Derniers événements du bot</span>
-              <ActivityTimeline logs={logs.slice(0, 8)} />
+              <h4 className="card-title">Current Visitors</h4>
+              <p className="card-subtitle">Different Devices Used to Visit</p>
+              <div className="d-flex align-items-center justify-content-center my-3" style={{ height: 240 }}>
+                <UsRegionsViz />
+              </div>
+              <div className="text-center">
+                <ul className="list-inline mb-0 d-inline-flex justify-content-center">
+                  <li className="list-inline-item px-2 me-0">
+                    <div className="text-secondary d-flex align-items-center gap-2 fs-3">
+                      <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Valley
+                    </div>
+                  </li>
+                  <li className="list-inline-item px-2 me-0">
+                    <div className="text-primary d-flex align-items-center gap-2 fs-3">
+                      <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>New York
+                    </div>
+                  </li>
+                  <li className="list-inline-item px-2 me-0">
+                    <div className="text-danger d-flex align-items-center gap-2 fs-3">
+                      <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Kansas
+                    </div>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Projects of the Month */}
+        <div className="col-lg-8">
+          <div className="card">
+            <div className="card-body pb-3">
+              <div className="d-md-flex">
+                <h4 className="card-title">Projects of the Month</h4>
+                <div className="ms-auto">
+                  <select className="form-select rounded-pill fw-medium" defaultValue="January">
+                    <option>January</option>
+                    <option value="1">February</option>
+                    <option value="2">March</option>
+                    <option value="3">April</option>
+                  </select>
+                </div>
+              </div>
+              <div className="table-responsive mt-3">
+                <table className="table align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th className="border-0 ps-0">Client</th>
+                      <th className="border-0">Name</th>
+                      <th className="border-0">Priority</th>
+                      <th className="border-0 text-end">Budget</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {PROJECTS.map((p, i) => (
+                      <tr key={i} className={i === PROJECTS.length - 1 ? "" : ""}>
+                        <td className="ps-0">
+                          <div className="d-flex align-items-center gap-3">
+                            <span className="rounded-circle overflow-hidden flex-shrink-0 d-inline-flex" style={{ width: 48, height: 48 }}>
+                              <img src={p.img} alt="" className="img-fluid" />
+                            </span>
+                            <div>
+                              <h5 className="mb-1">{p.client}</h5>
+                              <p className="mb-0 fs-3 text-muted">{p.role}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td><p className="mb-0">{p.name}</p></td>
+                        <td><span className={`badge bg-${p.priorityTone}-subtle text-${p.priorityTone}`}>{p.priorityLabel}</span></td>
+                        <td className="text-end"><p className="mb-0 fs-3">{p.budget}</p></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Our Visitors */}
+        <div className="col-lg-4">
+          <div className="card h-100">
+            <div className="card-body">
+              <h4 className="card-title">Our Visitors</h4>
+              <p className="card-subtitle">Different Devices Used to Visit</p>
+              <div id="our-visitors" className="mt-3">
+                <OurVisitorsDonut />
+              </div>
+            </div>
+            <div className="card-body d-flex align-items-center justify-content-center border-top mt-3">
+              <ul className="list-inline mb-0 d-inline-flex justify-content-center">
+                <li className="list-inline-item px-2 me-0">
+                  <div className="text-primary d-flex align-items-center gap-2 fs-3">
+                    <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Mobile
+                  </div>
+                </li>
+                <li className="list-inline-item px-2 me-0">
+                  <div className="text-purple d-flex align-items-center gap-2 fs-3" style={{ color: "#5e35b1" }}>
+                    <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Desktop
+                  </div>
+                </li>
+                <li className="list-inline-item px-2 me-0">
+                  <div className="text-secondary d-flex align-items-center gap-2 fs-3">
+                    <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Tablet
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        {/* Bandwidth + Download */}
+        <div className="col-lg-4">
+          <div className="card w-100 overflow-hidden">
+            <div className="card-body bonoitec-bg-purple">
+              <div className="d-flex align-items-center gap-3 mb-4">
+                <div className="bg-black bg-opacity-10 rounded-circle d-flex align-items-center justify-content-center" style={{ width: 48, height: 48 }}>
+                  <iconify-icon icon="solar:server-square-linear" class="fs-7 text-white"></iconify-icon>
+                </div>
+                <div>
+                  <h4 className="card-title text-white">Bandwidth usage</h4>
+                  <p className="card-subtitle text-white opacity-70 mb-0">March 2024</p>
+                </div>
+              </div>
+              <div className="row align-items-center">
+                <div className="col-6"><h2 className="mb-0 text-white text-nowrap">50 GB</h2></div>
+                <div className="col-6"><MiniLineChart /></div>
+              </div>
+            </div>
+          </div>
+          <div className="card w-100 overflow-hidden">
+            <div className="card-body bg-secondary">
+              <div className="d-flex align-items-center gap-3 mb-4">
+                <div className="bg-white bg-opacity-25 rounded-circle d-flex align-items-center justify-content-center" style={{ width: 48, height: 48 }}>
+                  <iconify-icon icon="solar:chart-2-linear" class="fs-7 text-white"></iconify-icon>
+                </div>
+                <div>
+                  <h3 className="card-title text-white">Download count</h3>
+                  <h6 className="card-subtitle text-white opacity-70 mb-0">March 2024</h6>
+                </div>
+              </div>
+              <div className="row align-items-center">
+                <div className="col-5"><h2 className="mb-0 text-white text-nowrap">35487</h2></div>
+                <div className="col-7"><MiniBarChart /></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Profile card */}
+        <div className="col-lg-4">
+          <div className="card">
+            <div className="card-body p-2">
+              <img className="card-img-top w-100 rounded overflow-hidden" src="/assets/images/backgrounds/profile-bg.jpg" style={{ height: 111, objectFit: "cover" }} alt="cover" />
+              <div className="text-center p-7" style={{ marginTop: -56 }}>
+                <img src="/assets/images/profile/user-1.jpg" alt="user" className="rounded-circle shadow-sm border border-3 border-white" width="112" height="112" />
+                <h3 className="mb-1 mt-3">Angela Dominic</h3>
+                <p className="fs-3 text-muted">Web Designer &amp; Developer</p>
+                <a href="#" onClick={(e) => e.preventDefault()} className="btn btn-primary btn-rounded mb-4">Follow</a>
+                <div className="row gx-lg-4 text-center pt-7 justify-content-center border-top">
+                  <div className="col-4"><h3 className="mb-0">1099</h3><small className="text-muted fs-3">Articles</small></div>
+                  <div className="col-4"><h3 className="mb-0">23,469</h3><small className="text-muted fs-3">Followers</small></div>
+                  <div className="col-4"><h3 className="mb-0">6035</h3><small className="text-muted fs-3">Following</small></div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -432,96 +440,51 @@ export default function Dashboard() {
   );
 }
 
-function DistRow({ label, count, total, tone }) {
-  const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+const CONTACTS = [
+  { img: "/assets/images/profile/user-2.jpg", name: "James Smith", msg: "you were in video call", status: "online" },
+  { img: "/assets/images/profile/user-6.jpg", name: "Joseph Garciar", msg: "you were in video call", status: "busy" },
+  { img: "/assets/images/profile/user-3.jpg", name: "Maria Rodriguez", msg: "you missed john call", status: "busy" },
+  { img: "/assets/images/profile/user-10.jpg", name: "John Mainga", msg: "you missed john call", status: "busy" }
+];
+
+const PROJECTS = [
+  { img: "/assets/images/profile/user-2.jpg", client: "Sunil Joshi", role: "Web Designer", name: "Digital Agency", priorityLabel: "Low", priorityTone: "primary", budget: "$3.9K" },
+  { img: "/assets/images/profile/user-4.jpg", client: "Andrew Liock", role: "Project Manager", name: "Real Homes", priorityLabel: "Medium", priorityTone: "info", budget: "$23.9K" },
+  { img: "/assets/images/profile/user-5.jpg", client: "Biaca George", role: "Developer", name: "MedicalPro Theme", priorityLabel: "High", priorityTone: "secondary", budget: "$12.9K" },
+  { img: "/assets/images/profile/user-6.jpg", client: "Nirav Joshi", role: "Frontend Eng", name: "Elite Admin", priorityLabel: "Very High", priorityTone: "danger", budget: "$2.6K" }
+];
+
+/** US regions visual — placeholder for the jvectormap US map. Dots positioned
+ * roughly where Vally, New York, Kansas land geographically, with the MP color
+ * palette. Visually communicates the same data as the original map. */
+function UsRegionsViz() {
   return (
-    <div className="d-flex align-items-center justify-content-between mb-2 fs-3">
-      <span className="d-flex align-items-center gap-2">
-        <span className={`bg-${tone} rounded-circle d-inline-block`} style={{ width: 10, height: 10 }}></span>
-        {label}
-      </span>
-      <span className="text-muted">{count} <small>({pct}%)</small></span>
-    </div>
+    <svg viewBox="0 0 320 200" width="100%" height="100%" style={{ maxHeight: 220 }} aria-label="US regions visualization">
+      <defs>
+        <filter id="bonoitec-glow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="3" />
+        </filter>
+      </defs>
+      {/* Stylised US outline */}
+      <path
+        d="M40 90 L80 60 L130 50 L180 55 L220 50 L260 65 L290 95 L280 130 L260 145 L220 155 L180 150 L140 145 L100 150 L60 135 Z"
+        fill="#c9d6de"
+        stroke="#a9b8c2"
+        strokeWidth="1.5"
+        opacity="0.7"
+      />
+      {/* Markers */}
+      <g>
+        {/* Valley — SF area */}
+        <circle cx="60" cy="120" r="14" fill="#26c6da" opacity="0.3" filter="url(#bonoitec-glow)" />
+        <circle cx="60" cy="120" r="6" fill="#26c6da" />
+        {/* Kansas — center */}
+        <circle cx="170" cy="115" r="14" fill="#fc4b6c" opacity="0.3" filter="url(#bonoitec-glow)" />
+        <circle cx="170" cy="115" r="6" fill="#fc4b6c" />
+        {/* New York — east */}
+        <circle cx="265" cy="85" r="14" fill="#1e88e5" opacity="0.3" filter="url(#bonoitec-glow)" />
+        <circle cx="265" cy="85" r="6" fill="#1e88e5" />
+      </g>
+    </svg>
   );
-}
-
-function buildMetrics(scans, deals) {
-  const now = Date.now();
-  const cutoff = now - 24 * 3600 * 1000;
-  const recent = scans.filter((scan) => scan.startedAt && new Date(scan.startedAt).getTime() >= cutoff);
-  const totalListings = recent.reduce((sum, scan) => sum + (scan.listings ?? 0), 0);
-  const scanCount = recent.length;
-  const avgListings = scanCount > 0 ? Math.round(totalListings / scanCount) : 0;
-
-  // Build sparkline buckets over the last 8 hours, oldest → newest
-  const buckets = new Array(8).fill(0);
-  const sentBuckets = new Array(8).fill(0);
-  const scanBuckets = new Array(8).fill(0);
-  const bucketSize = 3600 * 1000; // 1h
-  const startBucket = now - 8 * bucketSize;
-  for (const scan of scans) {
-    if (!scan.startedAt) continue;
-    const t = new Date(scan.startedAt).getTime();
-    const idx = Math.floor((t - startBucket) / bucketSize);
-    if (idx < 0 || idx >= 8) continue;
-    buckets[idx] += scan.listings ?? 0;
-    sentBuckets[idx] += scan.sent ?? 0;
-    scanBuckets[idx] += 1;
-  }
-  return {
-    totalListings,
-    scanCount,
-    avgListings,
-    listingsHistory: buckets,
-    sentHistory: sentBuckets,
-    scanHistory: scanBuckets
-  };
-}
-
-function buildScoreDistribution(deals) {
-  let good = 0;
-  let medium = 0;
-  let low = 0;
-  for (const deal of deals) {
-    const score = deal.score ?? 0;
-    if (score >= 88) good += 1;
-    else if (score >= 82) medium += 1;
-    else low += 1;
-  }
-  return { good, medium, low, total: good + medium + low };
-}
-
-function buildHourlyChart(scans) {
-  const now = Date.now();
-  const buckets = 12;
-  const bucketSize = 2 * 3600 * 1000; // 2h
-  const start = now - buckets * bucketSize;
-  const listings = new Array(buckets).fill(0);
-  const sent = new Array(buckets).fill(0);
-  const categories = [];
-  for (let i = 0; i < buckets; i += 1) {
-    const t = new Date(start + i * bucketSize);
-    categories.push(t.toLocaleTimeString("fr-FR", { hour: "2-digit" }) + "h");
-  }
-  for (const scan of scans) {
-    if (!scan.startedAt) continue;
-    const t = new Date(scan.startedAt).getTime();
-    const idx = Math.floor((t - start) / bucketSize);
-    if (idx < 0 || idx >= buckets) continue;
-    listings[idx] += scan.listings ?? 0;
-    sent[idx] += scan.sent ?? 0;
-  }
-  return {
-    categories,
-    series: [
-      { name: "Annonces", data: listings },
-      { name: "Alertes", data: sent }
-    ]
-  };
-}
-
-function buildTopSearches(searches, scans) {
-  return [...(searches ?? [])]
-    .sort((a, b) => (b.enabled === a.enabled ? (b.limit ?? 0) - (a.limit ?? 0) : b.enabled - a.enabled))
-    .slice(0, 5);
 }

@@ -72,3 +72,43 @@
   width: 8px;
   height: 8px;
 }
+
+/* ── Index3 demo clone — Upgrade Plan promo card ── */
+.bonoitec-upgrade-plan {
+  background: linear-gradient(135deg, #1e88e5 0%, #1565c0 100%);
+  border: 0;
+  color: #fff;
+  position: relative;
+  overflow: hidden;
+}
+.bonoitec-upgrade-plan::after {
+  content: "";
+  position: absolute;
+  right: -40px;
+  top: -40px;
+  width: 180px;
+  height: 180px;
+  background: radial-gradient(circle, rgba(255,255,255,0.15), transparent 60%);
+  pointer-events: none;
+}
+
+/* ── Index3 demo clone — Material Pro video card background ── */
+.bonoitec-materialpro-bg {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.92), rgba(245,248,252,0.92)),
+    radial-gradient(circle at 80% 50%, #c9d6f5, transparent 60%);
+  background-color: #f5f8fc;
+  border: 0;
+}
+
+/* ── Index3 demo clone — Purple bg used on Design Meetings + Bandwidth ── */
+.bonoitec-bg-purple {
+  background: #5e35b1;
+  color: #fff;
+}
+
+/* ── Index3 round helpers used by demo HTML ── */
+.round-36 { width: 36px; height: 36px; }
+.round-40 { width: 40px; height: 40px; }
+.round-48 { width: 48px; height: 48px; }
+.round-60 { width: 60px; height: 60px; }
