@@ -28,9 +28,11 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "apexcharts": "^5.11.0",
     "lucide-react": "^1.14.0",
     "pg": "^8.20.0",
     "react": "^19.2.6",
+    "react-apexcharts": "^2.1.0",
     "react-dom": "^19.2.6",
     "vite": "^8.0.11"
   }

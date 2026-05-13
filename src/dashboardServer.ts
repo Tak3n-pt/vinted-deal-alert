@@ -382,6 +382,11 @@ async function handleApi(
     sendJson(res, 200, { logs: await dashboardStore.listLogs(limitFromUrl(url, 100), userId) });
     return;
   }
+  if (req.method === "GET" && url.pathname === "/api/analytics") {
+    const range = Math.max(1, Math.min(365, Number(url.searchParams.get("range") ?? 30) || 30));
+    sendJson(res, 200, { analytics: await dashboardStore.getAnalytics(userId, range) });
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/api/discord/test") {
     requireAdmin();
     await controller.testDiscord();

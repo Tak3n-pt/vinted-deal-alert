@@ -1,0 +1,74 @@
+/* Bonoitec-specific tweaks layered on top of MaterialPro's bundled styles.
+   Keep this file small — only add what MaterialPro itself doesn't provide. */
+
+/* ── Gradient KPI cards (matches MaterialPro's "On Expense" hero card) ── */
+.bonoitec-grad-primary {
+  background: linear-gradient(135deg, #1e88e5 0%, #1976d2 100%);
+}
+.bonoitec-grad-secondary {
+  background: linear-gradient(135deg, #26c6da 0%, #00bcd4 100%);
+}
+.bonoitec-grad-success {
+  background: linear-gradient(135deg, #00c292 0%, #00a878 100%);
+}
+.bonoitec-grad-warning {
+  background: linear-gradient(135deg, #fec90f 0%, #f59e0b 100%);
+}
+.bonoitec-grad-danger {
+  background: linear-gradient(135deg, #e46a76 0%, #d54552 100%);
+}
+.bonoitec-grad-info {
+  background: linear-gradient(135deg, #03c9d7 0%, #0093c4 100%);
+}
+
+/* ── Welcome hero card (matches the MP "Upgrade Plan" promo card) ── */
+.bonoitec-hero {
+  background: linear-gradient(135deg, #1e88e5 0%, #5e35b1 100%);
+  color: #fff;
+  border: 0;
+  overflow: hidden;
+  position: relative;
+}
+.bonoitec-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at top right, rgba(255, 255, 255, 0.12), transparent 55%);
+  pointer-events: none;
+}
+.bonoitec-hero .hero-icon {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ── Tighten round dot used on toggle-active indicators ── */
+.bonoitec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* ── Make horizontal nav active state read better against the white bar ── */
+[data-layout="horizontal"] .sidebar-nav .sidebar-link.active {
+  background: var(--bs-primary);
+  color: #fff !important;
+}
+[data-layout="horizontal"] .sidebar-nav .sidebar-link.active iconify-icon {
+  color: #fff !important;
+}
+
+/* Force the bell notification dot pill to fit nicely */
+.notification {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 8px;
+  height: 8px;
+}

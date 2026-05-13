@@ -1,5 +1,6 @@
 import type { RuntimeConfig, ScoredDeal, SearchConfig } from "./types.js";
 import { openSqlDatabase, type SqlDatabase } from "./sqlDatabase.js";
+import { buildAnalytics, type AnalyticsSnapshot } from "./analytics.js";
 import type {
   DashboardLogRecord,
   DashboardRuntimeSnapshot,
@@ -76,7 +77,14 @@ const DEFAULT_RISK_RULES: RiskRules = {
   minBatteryHealth: 80,
   allowedCountries: [],
   customExcludeKeywords: [],
-  customExcludeSeverity: "reject"
+  customExcludeSeverity: "reject",
+  sellerBlocklist: [],
+  sellerAllowlist: [],
+  maxFavoriteCount: 0,
+  maxListingAgeHours: 0,
+  excludeVintedPro: false,
+  minSellerItems: 0,
+  colorAllowlist: []
 };
 
 export class DashboardStore {
@@ -447,8 +455,10 @@ export class DashboardStore {
       `insert into user_risk_rules
         (user_id, reject_high_risks, allow_missing_image, reject_non_original_screen, reject_screen_replaced,
          reject_missing_invoice, min_seller_reviews, min_seller_rating, min_battery_health,
-         allowed_countries_json, custom_exclude_keywords_json, custom_exclude_severity, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         allowed_countries_json, custom_exclude_keywords_json, custom_exclude_severity,
+         seller_blocklist_json, seller_allowlist_json, max_favorite_count, max_listing_age_hours,
+         exclude_vinted_pro, min_seller_items, max_battery_health, color_allowlist_json, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
        on conflict(user_id) do update set
          reject_high_risks = excluded.reject_high_risks,
          allow_missing_image = excluded.allow_missing_image,
@@ -461,6 +471,14 @@ export class DashboardStore {
          allowed_countries_json = excluded.allowed_countries_json,
          custom_exclude_keywords_json = excluded.custom_exclude_keywords_json,
          custom_exclude_severity = excluded.custom_exclude_severity,
+         seller_blocklist_json = excluded.seller_blocklist_json,
+         seller_allowlist_json = excluded.seller_allowlist_json,
+         max_favorite_count = excluded.max_favorite_count,
+         max_listing_age_hours = excluded.max_listing_age_hours,
+         exclude_vinted_pro = excluded.exclude_vinted_pro,
+         min_seller_items = excluded.min_seller_items,
+         max_battery_health = excluded.max_battery_health,
+         color_allowlist_json = excluded.color_allowlist_json,
          updated_at = CURRENT_TIMESTAMP`,
       [
         userId,
@@ -474,7 +492,15 @@ export class DashboardStore {
         normalized.minBatteryHealth,
         JSON.stringify(normalized.allowedCountries),
         JSON.stringify(normalized.customExcludeKeywords),
-        normalized.customExcludeSeverity
+        normalized.customExcludeSeverity,
+        JSON.stringify(normalized.sellerBlocklist),
+        JSON.stringify(normalized.sellerAllowlist),
+        normalized.maxFavoriteCount,
+        normalized.maxListingAgeHours,
+        normalized.excludeVintedPro ? 1 : 0,
+        normalized.minSellerItems,
+        normalized.maxBatteryHealth ?? null,
+        JSON.stringify(normalized.colorAllowlist)
       ]
     );
     await this.log("info", "Règles de risque mises à jour", userId);
@@ -515,12 +541,15 @@ export class DashboardStore {
     if (deals.length === 0) return;
     await this.db.transaction(async () => {
       for (const deal of deals) {
+        const hoursSinceListed = computeHoursSinceListed(deal.listing.listedAt);
         await this.db.run(
           `insert into deal_candidates
             (scan_run_id, listing_id, title, model, storage_gb, final_price, benchmark_price,
              discount_percent, savings, score, should_alert, sent, url, image_url, seller_name,
-             risk_level, risks_json, reasons_json, rejection_reasons_json, created_at, user_id)
-           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
+             risk_level, risks_json, reasons_json, rejection_reasons_json, seller_country,
+             item_location, hours_since_listed, match_confidence, family, generation, tier,
+             favorite_count, created_at, user_id)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
           [
             scanRunId ?? null,
             deal.listing.id,
@@ -541,6 +570,14 @@ export class DashboardStore {
             JSON.stringify(deal.risks),
             JSON.stringify(deal.reasons),
             JSON.stringify(deal.rejectionReasons),
+            deal.listing.sellerCountry ?? deal.listing.itemCountry ?? null,
+            deal.listing.itemLocation ?? deal.listing.sellerLocation ?? null,
+            hoursSinceListed,
+            deal.match.confidence ?? null,
+            deal.match.family ?? null,
+            deal.match.generation ?? null,
+            deal.match.tier ?? null,
+            deal.listing.favoriteCount ?? null,
             userId
           ]
         );
@@ -586,6 +623,35 @@ export class DashboardStore {
       "select * from deal_candidates where user_id = ? order by id desc limit ?",
       [userId, clampInt(limit, 1, 300, "limit")]
     )).map(dealCandidateFromRow);
+  }
+
+  /**
+   * Aggregated analytics for the Statistiques view. Pure read — works against
+   * existing deal_candidates / scan_runs / dashboard_logs rows. Range is the
+   * lookback window in days (default 30).
+   *
+   * Heavy aggregation is done in JS rather than SQL to keep the queries
+   * dialect-agnostic. Volume should stay manageable: dealCandidatesKeep caps
+   * the table at ~10k rows per user.
+   */
+  async getAnalytics(userId: number = 1, rangeDays: number = 30): Promise<AnalyticsSnapshot> {
+    const clampedDays = clampInt(rangeDays, 1, 365, "rangeDays");
+    const cutoffSql =
+      this.db.dialect === "postgres"
+        ? `CURRENT_TIMESTAMP - (?::int * interval '1 day')`
+        : `datetime('now', ?)`;
+    const cutoffArg = this.db.dialect === "postgres" ? clampedDays : `-${clampedDays} days`;
+
+    const deals = await this.db.all(
+      `select * from deal_candidates where user_id = ? and created_at >= ${cutoffSql} order by id desc`,
+      [userId, cutoffArg]
+    );
+    const scans = await this.db.all(
+      `select * from scan_runs where user_id = ? and started_at >= ${cutoffSql} order by id desc`,
+      [userId, cutoffArg]
+    );
+
+    return buildAnalytics(deals, scans, clampedDays);
   }
 
   async listLogs(limit = 100, userId: number = 1): Promise<DashboardLogRecord[]> {
@@ -1309,6 +1375,31 @@ export class DashboardStore {
           : "insert into dashboard_settings (key, value, secret, updated_at) values ('multi_tenant_model_rules_pk', '1', 0, CURRENT_TIMESTAMP)"
       );
     }
+
+    // Analytics-enabling columns on deal_candidates. All nullable, additive —
+    // older rows keep their null values and stats queries coalesce gracefully.
+    await this.addColumnIfMissing("deal_candidates", "seller_country", "text");
+    await this.addColumnIfMissing("deal_candidates", "item_location", "text");
+    await this.addColumnIfMissing("deal_candidates", "hours_since_listed", "real");
+    await this.addColumnIfMissing("deal_candidates", "match_confidence", "real");
+    await this.addColumnIfMissing("deal_candidates", "family", "text");
+    await this.addColumnIfMissing("deal_candidates", "generation", "integer");
+    await this.addColumnIfMissing("deal_candidates", "tier", "text");
+    await this.addColumnIfMissing("deal_candidates", "favorite_count", "integer");
+
+    // Extended seller/listing filters on user_risk_rules. JSON columns for
+    // arrays keep the schema flat. Same defaults on the legacy single-tenant
+    // dashboard_risk_rules table so both code paths stay in sync.
+    for (const table of ["user_risk_rules", "dashboard_risk_rules"]) {
+      await this.addColumnIfMissing(table, "seller_blocklist_json", "text not null default '[]'");
+      await this.addColumnIfMissing(table, "seller_allowlist_json", "text not null default '[]'");
+      await this.addColumnIfMissing(table, "max_favorite_count", "integer");
+      await this.addColumnIfMissing(table, "max_listing_age_hours", "integer");
+      await this.addColumnIfMissing(table, "exclude_vinted_pro", "integer not null default 0");
+      await this.addColumnIfMissing(table, "min_seller_items", "integer not null default 0");
+      await this.addColumnIfMissing(table, "max_battery_health", "integer");
+      await this.addColumnIfMissing(table, "color_allowlist_json", "text not null default '[]'");
+    }
   }
 
   private async addColumnIfMissing(table: string, column: string, definition: string): Promise<void> {
@@ -1364,12 +1455,37 @@ function normalizeRiskRules(rules: RiskRules): RiskRules {
     minSellerReviews: nonNegativeInt(rules.minSellerReviews, "minSellerReviews"),
     minSellerRating: clampNumber(rules.minSellerRating, 0, 5, "minSellerRating"),
     minBatteryHealth: clampInt(rules.minBatteryHealth, 0, 100, "minBatteryHealth"),
+    ...(rules.maxBatteryHealth != null
+      ? { maxBatteryHealth: clampInt(rules.maxBatteryHealth, 1, 100, "maxBatteryHealth") }
+      : {}),
     allowedCountries: [...new Set(rules.allowedCountries.map((country) => country.trim().toUpperCase()).filter(Boolean))],
     customExcludeKeywords: [...new Set(keywords.map((keyword) => keyword.toLowerCase()))].slice(0, 50),
     customExcludeSeverity: rules.customExcludeSeverity === "high" || rules.customExcludeSeverity === "medium"
       ? rules.customExcludeSeverity
-      : "reject"
+      : "reject",
+    sellerBlocklist: dedupeLowercase(rules.sellerBlocklist ?? [], 100),
+    sellerAllowlist: dedupeLowercase(rules.sellerAllowlist ?? [], 100),
+    maxFavoriteCount: nonNegativeInt(rules.maxFavoriteCount ?? 0, "maxFavoriteCount"),
+    maxListingAgeHours: nonNegativeInt(rules.maxListingAgeHours ?? 0, "maxListingAgeHours"),
+    excludeVintedPro: Boolean(rules.excludeVintedPro),
+    minSellerItems: nonNegativeInt(rules.minSellerItems ?? 0, "minSellerItems"),
+    colorAllowlist: dedupeLowercase(rules.colorAllowlist ?? [], 30)
   };
+}
+
+function dedupeLowercase(items: string[], maxCount: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of items) {
+    const trimmed = String(item).trim();
+    if (!trimmed || trimmed.length > 64) continue;
+    const lower = trimmed.toLowerCase();
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    out.push(trimmed);
+    if (out.length >= maxCount) break;
+  }
+  return out;
 }
 
 function searchFromRow(row: Record<string, unknown>): DashboardSearch {
@@ -1405,7 +1521,7 @@ function modelRuleFromRow(row: Record<string, unknown>): ModelRule {
 }
 
 function riskRulesFromRow(row: Record<string, unknown>): RiskRules {
-  return normalizeRiskRules({
+  const partial: RiskRules = {
     rejectHighRisks: Number(row.reject_high_risks) === 1,
     allowMissingImage: Number(row.allow_missing_image) === 1,
     rejectNonOriginalScreen: Number(row.reject_non_original_screen) === 1,
@@ -1416,8 +1532,17 @@ function riskRulesFromRow(row: Record<string, unknown>): RiskRules {
     minBatteryHealth: Number(row.min_battery_health ?? 80),
     allowedCountries: parseStringArray(row.allowed_countries_json),
     customExcludeKeywords: parseStringArray(row.custom_exclude_keywords_json),
-    customExcludeSeverity: severityFromRow(row.custom_exclude_severity)
-  });
+    customExcludeSeverity: severityFromRow(row.custom_exclude_severity),
+    sellerBlocklist: parseStringArray(row.seller_blocklist_json),
+    sellerAllowlist: parseStringArray(row.seller_allowlist_json),
+    maxFavoriteCount: Number(row.max_favorite_count ?? 0),
+    maxListingAgeHours: Number(row.max_listing_age_hours ?? 0),
+    excludeVintedPro: Number(row.exclude_vinted_pro ?? 0) === 1,
+    minSellerItems: Number(row.min_seller_items ?? 0),
+    colorAllowlist: parseStringArray(row.color_allowlist_json)
+  };
+  if (row.max_battery_health != null) partial.maxBatteryHealth = Number(row.max_battery_health);
+  return normalizeRiskRules(partial);
 }
 
 function severityFromRow(value: unknown): RiskRules["customExcludeSeverity"] {
@@ -1455,6 +1580,15 @@ function userSettingsFromRow(row: Record<string, unknown>): UserSettings {
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function computeHoursSinceListed(listedAt: string | undefined): number | null {
+  if (!listedAt) return null;
+  const ts = Date.parse(listedAt);
+  if (!Number.isFinite(ts)) return null;
+  const diffMs = Date.now() - ts;
+  if (diffMs < 0) return 0;
+  return Math.round((diffMs / 3_600_000) * 10) / 10; // 1 decimal
 }
 
 function scanRunFromRow(row: Record<string, unknown>): ScanRunRecord {

@@ -4,3 +4,5 @@ data/
 dist/
 *.log
 .superpowers/
+dashboard/scripts/screenshots/
+dashboard/scripts/*.ref

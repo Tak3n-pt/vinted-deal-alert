@@ -33,11 +33,27 @@ export interface RiskRules {
   minSellerReviews: number;
   minSellerRating: number;
   minBatteryHealth: number;
+  /** Optional upper bound for battery health — useful for catching unrealistic claims (>100). */
+  maxBatteryHealth?: number;
   allowedCountries: string[];
   /** User-managed substrings that, when present in title or description, raise a custom risk. */
   customExcludeKeywords: string[];
   /** Severity for the custom-keyword risk. Defaults to "reject". */
   customExcludeSeverity: "reject" | "high" | "medium";
+  /** Seller usernames that block any listing they post. Case-insensitive. */
+  sellerBlocklist: string[];
+  /** Seller usernames that get a confidence bonus (lower risk thresholds, +3 score). */
+  sellerAllowlist: string[];
+  /** Skip listings with more than this many Vinted favorites (too competitive). 0 = unlimited. */
+  maxFavoriteCount: number;
+  /** Skip listings older than N hours (only catch fresh deals). 0 = unlimited. */
+  maxListingAgeHours: number;
+  /** Drop listings from Vinted Pro / Business accounts. */
+  excludeVintedPro: boolean;
+  /** Minimum item-count threshold for the seller (filter out inactive sellers). 0 = no min. */
+  minSellerItems: number;
+  /** Allowed colors/variants. Empty array = all colors. Matched substring in title/description. */
+  colorAllowlist: string[];
 }
 
 export interface ScoringOptions {
@@ -426,6 +442,14 @@ function dashboardRiskSignals(listing: Listing, rules: RiskRules | undefined): R
     });
   }
 
+  if (rules.maxBatteryHealth != null && batteryHealth !== undefined && batteryHealth > rules.maxBatteryHealth) {
+    signals.push({
+      code: "dashboard-max-battery-health",
+      label: `batterie au-dessus de ${rules.maxBatteryHealth}%`,
+      severity: "medium"
+    });
+  }
+
   // User-managed custom exclude keywords. Case-insensitive substring match
   // against title + description + condition. Each match becomes a single
   // signal — multiple keywords matching produce one risk with the joined
@@ -440,6 +464,78 @@ function dashboardRiskSignals(listing: Listing, rules: RiskRules | undefined): R
         code: "dashboard-custom-keyword-exclude",
         label: `mots-clés exclus : ${hits.join(", ")}`,
         severity: rules.customExcludeSeverity
+      });
+    }
+  }
+
+  // Seller blocklist — case-insensitive username match. Drops the listing.
+  if (rules.sellerBlocklist?.length && listing.sellerName) {
+    const seller = listing.sellerName.toLowerCase();
+    if (rules.sellerBlocklist.some((name) => name.toLowerCase() === seller)) {
+      signals.push({
+        code: "dashboard-seller-blocked",
+        label: `vendeur "${listing.sellerName}" sur la liste noire`,
+        severity: "reject"
+      });
+    }
+  }
+
+  // Listing age cap — fresh deals only. listedAt is ISO 8601.
+  if (rules.maxListingAgeHours > 0 && listing.listedAt) {
+    const ageMs = Date.now() - Date.parse(listing.listedAt);
+    if (Number.isFinite(ageMs)) {
+      const ageHours = ageMs / 3_600_000;
+      if (ageHours > rules.maxListingAgeHours) {
+        signals.push({
+          code: "dashboard-listing-too-old",
+          label: `annonce postée il y a ${Math.round(ageHours)}h (> ${rules.maxListingAgeHours}h)`,
+          severity: "reject"
+        });
+      }
+    }
+  }
+
+  // Favorite-count cap — too-competitive deals.
+  if (rules.maxFavoriteCount > 0 && (listing.favoriteCount ?? 0) > rules.maxFavoriteCount) {
+    signals.push({
+      code: "dashboard-too-many-favorites",
+      label: `${listing.favoriteCount} favoris (limite ${rules.maxFavoriteCount})`,
+      severity: "reject"
+    });
+  }
+
+  // Vinted Pro/Business filter — proxy via seller-item-count >= 200 OR
+  // explicit "vinted pro"/"business"/"professional" in description.
+  if (rules.excludeVintedPro) {
+    const itemCount = listing.sellerItemCount ?? 0;
+    const proInDescription = /\b(vinted\s*pro|business|professional|professionnel)\b/i.test(text);
+    if (itemCount >= 200 || proInDescription) {
+      signals.push({
+        code: "dashboard-vinted-pro",
+        label: "vendeur Vinted Pro/business filtré",
+        severity: "reject"
+      });
+    }
+  }
+
+  // Seller-min-items — exclude very inactive sellers.
+  if (rules.minSellerItems > 0 && (listing.sellerItemCount ?? 0) < rules.minSellerItems) {
+    signals.push({
+      code: "dashboard-seller-too-inactive",
+      label: `vendeur avec moins de ${rules.minSellerItems} articles`,
+      severity: "high"
+    });
+  }
+
+  // Color allowlist — only alert on listings matching at least one color.
+  if (rules.colorAllowlist?.length) {
+    const haystack = text.toLowerCase();
+    const hasMatch = rules.colorAllowlist.some((color) => haystack.includes(color.toLowerCase()));
+    if (!hasMatch) {
+      signals.push({
+        code: "dashboard-color-not-allowed",
+        label: `aucune des couleurs autorisées (${rules.colorAllowlist.join(", ")})`,
+        severity: "reject"
       });
     }
   }

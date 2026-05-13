@@ -316,7 +316,14 @@ test("custom exclude keywords reject matching listings", () => {
         minBatteryHealth: 80,
         allowedCountries: [],
         customExcludeKeywords: ["reconditionne", "reconditionné"],
-        customExcludeSeverity: "reject"
+        customExcludeSeverity: "reject",
+        sellerBlocklist: [],
+        sellerAllowlist: [],
+        maxFavoriteCount: 0,
+        maxListingAgeHours: 0,
+        excludeVintedPro: false,
+        minSellerItems: 0,
+        colorAllowlist: []
       }
     }
   );
@@ -352,7 +359,14 @@ test("custom exclude keywords are case-insensitive substring matches", () => {
         minBatteryHealth: 80,
         allowedCountries: [],
         customExcludeKeywords: ["URGENTE"],
-        customExcludeSeverity: "high"
+        customExcludeSeverity: "high",
+        sellerBlocklist: [],
+        sellerAllowlist: [],
+        maxFavoriteCount: 0,
+        maxListingAgeHours: 0,
+        excludeVintedPro: false,
+        minSellerItems: 0,
+        colorAllowlist: []
       }
     }
   );
