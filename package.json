@@ -7,7 +7,7 @@
   "scripts": {
     "build": "npm run build:server && npm run dashboard:build",
     "build:server": "tsc",
-    "dashboard:build": "vite build --config dashboard/vite.config.js && node scripts/copy-demo.mjs",
+    "dashboard:build": "node scripts/build-static.mjs",
     "dashboard": "npm run build && node dist/src/dashboardServer.js",
     "serve": "node dist/src/dashboardServer.js",
     "start": "npm run build:server && node dist/src/index.js",
