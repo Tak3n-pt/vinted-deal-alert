@@ -1,11 +1,49 @@
-import { cpSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
-mkdirSync('dist/dashboard', { recursive: true });
+const outDir = "dist/dashboard";
+const indexPath = join(outDir, "index.html");
+const remoteAssetPrefix = "https://bootstrapdemos.wrappixel.com/materialpro/dist/assets/";
 
-cpSync('dashboard/public', 'dist/dashboard', { recursive: true });
+rmSync(outDir, { recursive: true, force: true });
+mkdirSync(outDir, { recursive: true });
 
-let html = readFileSync('demo-clone/index.html', 'utf8');
-html = html.replace(/https:\/\/bootstrapdemos\.wrappixel\.com\/materialpro\/dist\/assets\//g, '/assets/');
-writeFileSync('dist/dashboard/index.html', html);
+cpSync("dashboard/public", outDir, { recursive: true });
 
-console.log('[build-static] done');
+let html = readFileSync("demo-clone/index.html", "utf8");
+html = html.replaceAll(remoteAssetPrefix, "/assets/");
+writeFileSync(indexPath, html);
+
+const indexSize = statSync(indexPath).size;
+if (indexSize < 200_000) {
+  throw new Error(`[build-static] dist/dashboard/index.html is only ${indexSize} bytes; expected the demo-clone HTML`);
+}
+
+if (!html.includes("M&eacute;triques Rapides") || html.includes('id="root"')) {
+  throw new Error("[build-static] dist/dashboard/index.html does not look like the MaterialPro demo clone");
+}
+
+if (html.includes(remoteAssetPrefix)) {
+  throw new Error("[build-static] dist/dashboard/index.html still contains bootstrapdemos asset URLs");
+}
+
+const requiredAssets = [
+  "assets/css/styles.css",
+  "assets/js/vendor.min.js",
+  "assets/libs/apexcharts/dist/apexcharts.min.js",
+  "assets/libs/bootstrap/dist/js/bootstrap.bundle.min.js",
+  "assets/libs/simplebar/dist/simplebar.min.js",
+  "assets/js/theme/app.horizontal.init.js",
+  "assets/js/theme/theme.js",
+  "assets/js/theme/app.min.js",
+  "assets/js/theme/sidebarmenu.js",
+  "assets/js/theme/feather.min.js",
+  "assets/js/dashboards/dashboard3.js"
+];
+
+const missingAssets = requiredAssets.filter((assetPath) => !existsSync(join(outDir, assetPath)));
+if (missingAssets.length > 0) {
+  throw new Error(`[build-static] missing required dashboard assets:\n${missingAssets.join("\n")}`);
+}
+
+console.log(`[build-static] done: ${indexSize} bytes`);

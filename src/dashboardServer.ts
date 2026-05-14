@@ -63,7 +63,7 @@ function applySecurityHeaders(res: ServerResponse): void {
   res.setHeader("permissions-policy", "geolocation=(), microphone=(), camera=()");
   res.setHeader(
     "content-security-policy",
-    "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
+    "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'"
   );
 }
 
@@ -600,7 +600,12 @@ function mimeType(filePath: string): string {
   if (extension === ".css") return "text/css; charset=utf-8";
   if (extension === ".svg") return "image/svg+xml";
   if (extension === ".png") return "image/png";
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
   if (extension === ".webp") return "image/webp";
+  if (extension === ".woff2") return "font/woff2";
+  if (extension === ".woff") return "font/woff";
+  if (extension === ".ttf") return "font/ttf";
+  if (extension === ".eot") return "application/vnd.ms-fontobject";
   return "application/octet-stream";
 }
 
