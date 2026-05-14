@@ -4,6 +4,7 @@ import { join } from "node:path";
 const outDir = "dist/dashboard";
 const indexPath = join(outDir, "index.html");
 const remoteAssetPrefix = "https://bootstrapdemos.wrappixel.com/materialpro/dist/assets/";
+const botDataScript = '<script src="/assets/js/bot-data.js"></script>';
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
@@ -12,6 +13,9 @@ cpSync("dashboard/public", outDir, { recursive: true });
 
 let html = readFileSync("demo-clone/index.html", "utf8");
 html = html.replaceAll(remoteAssetPrefix, "/assets/");
+if (!html.includes(botDataScript)) {
+  html = html.replace("</body>", `  ${botDataScript}\n</body>`);
+}
 writeFileSync(indexPath, html);
 
 const indexSize = statSync(indexPath).size;
@@ -30,6 +34,7 @@ if (html.includes(remoteAssetPrefix)) {
 const requiredAssets = [
   "assets/css/styles.css",
   "assets/js/vendor.min.js",
+  "assets/js/bot-data.js",
   "assets/libs/apexcharts/dist/apexcharts.min.js",
   "assets/libs/bootstrap/dist/js/bootstrap.bundle.min.js",
   "assets/libs/jvectormap/jquery-jvectormap.min.js",

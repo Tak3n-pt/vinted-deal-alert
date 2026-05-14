@@ -246,6 +246,35 @@ async function handleApi(
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/public/dashboard") {
+    const userId = 1;
+    const [status, deals, scans, logs, searches] = await Promise.all([
+      controller.status(),
+      dashboardStore.listDealCandidates(limitFromUrl(url, 100), userId),
+      dashboardStore.listScanRuns(limitFromUrl(url, 100), userId),
+      dashboardStore.listLogs(limitFromUrl(url, 100), userId),
+      dashboardStore.listSearches(userId)
+    ]);
+    const activeSearches = searches.filter((search) => search.enabled);
+    sendJson(res, 200, {
+      generatedAt: new Date().toISOString(),
+      status,
+      deals,
+      scans,
+      logs,
+      activeSearchCount: activeSearches.length,
+      searchesTotal: searches.length,
+      searches: activeSearches.map((search) => ({
+        id: search.id,
+        enabled: search.enabled,
+        market: search.market,
+        limit: search.limit,
+        sort: search.sort
+      }))
+    });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/healthz") {
     sendJson(res, 200, { ok: true });
     return;
@@ -610,6 +639,7 @@ function mimeType(filePath: string): string {
 }
 
 function cacheHeader(filePath: string): string {
+  if (filePath.endsWith("bot-data.js")) return "no-cache";
   return filePath.includes("/assets/") || filePath.includes("\\assets\\") ? "public, max-age=31536000, immutable" : "no-cache";
 }
 
