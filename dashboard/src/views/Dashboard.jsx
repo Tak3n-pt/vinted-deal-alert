@@ -43,7 +43,7 @@ function brandFromTitle(text = "") {
 
 const PROFILE_IMGS = [
   "https://bootstrapdemos.wrappixel.com/materialpro/dist/assets/images/profile/user-2.jpg",
-  "https://bootstrapdemos.wrappixel.com/materialpro/dist/assets/images/profile/user-6.jpg",
+  "https://bootstrapdemos.wrappixel.com/materialpro/dist/assets/images/profile/user-9.jpg",
   "https://bootstrapdemos.wrappixel.com/materialpro/dist/assets/images/profile/user-3.jpg",
   "https://bootstrapdemos.wrappixel.com/materialpro/dist/assets/images/profile/user-10.jpg",
 ];
@@ -113,7 +113,7 @@ export default function Dashboard() {
               <nav aria-label="breadcrumb">
                 <ol className="breadcrumb">
                   <li className="breadcrumb-item">
-                    <a className="text-muted text-decoration-none" href="" onClick={(e) => e.preventDefault()}>Bonoitec Flash</a>
+                    <a className="text-muted text-decoration-none" href="" onClick={(e) => e.preventDefault()}>Home</a>
                   </li>
                   <li className="breadcrumb-item text-muted" aria-current="page">Vue d&apos;ensemble</li>
                 </ol>
@@ -122,20 +122,20 @@ export default function Dashboard() {
             <div>
               <div className="d-sm-flex d-none gap-3 no-block justify-content-end align-items-center">
                 <div className="d-flex gap-2">
-                  <div>
+                  <div className="">
                     <small>Ce mois-ci</small>
                     <h4 className="text-primary mb-0">{dealsCount} deals</h4>
                   </div>
-                  <div>
+                  <div className="">
                     <div className="breadbar"><Breadbar color="primary" /></div>
                   </div>
                 </div>
                 <div className="d-flex gap-2">
-                  <div>
-                    <small>Alertes envoy&eacute;es</small>
+                  <div className="">
+                    <small>Mois dernier</small>
                     <h4 className="text-secondary mb-0">{alertsCount} alertes</h4>
                   </div>
-                  <div>
+                  <div className="">
                     <div className="breadbar2"><Breadbar color="secondary" /></div>
                   </div>
                 </div>
@@ -178,7 +178,7 @@ export default function Dashboard() {
               <div className="hstack gap-9 my-9 pb-2">
                 <div className="hstack gap-2">
                   <div className="round-36 bg-white bg-opacity-20 rounded-circle hstack justify-content-center">
-                    <iconify-icon icon="solar:magnifer-line-duotone" class="fs-5 text-white"></iconify-icon>
+                    <i className="ti ti-user fs-5 text-white"></i>
                   </div>
                   <div>
                     <p className="mb-0 fs-2 text-white text-opacity-60">Recherches</p>
@@ -187,7 +187,7 @@ export default function Dashboard() {
                 </div>
                 <div className="hstack gap-2">
                   <div className="round-36 bg-white bg-opacity-20 rounded-circle hstack justify-content-center">
-                    <iconify-icon icon="solar:graph-up-line-duotone" class="fs-5 text-white"></iconify-icon>
+                    <i className="ti ti-circles-relation fs-5 text-white"></i>
                   </div>
                   <div>
                     <p className="mb-0 fs-2 text-white text-opacity-60">Prochain scan</p>
@@ -275,19 +275,23 @@ export default function Dashboard() {
                     const info  = brand ? BRAND_MAP[brand] : null;
                     return (
                       <li key={d.id ?? i} className={i > 0 ? "ms-n2" : ""}>
-                        {info ? (
-                          <div className={`${info.bg} rounded-circle border border-2 border-purple d-flex align-items-center justify-content-center`} style={{ width: 40, height: 40 }}>
-                            <img src={`https://cdn.simpleicons.org/${info.slug}/ffffff`} alt={brand} width="20" height="20" />
-                          </div>
-                        ) : (
-                          <img src={PROFILE_IMGS[i % 4]} className="rounded-circle border border-2 border-purple" width="40" height="40" alt="" />
-                        )}
+                        <a href="javascript:void(0)">
+                          {info ? (
+                            <div className={`${info.bg} rounded-circle border border-2 border-purple d-flex align-items-center justify-content-center`} style={{ width: 40, height: 40 }}>
+                              <img src={`https://cdn.simpleicons.org/${info.slug}/ffffff`} alt={brand} width="20" height="20" />
+                            </div>
+                          ) : (
+                            <img src={PROFILE_IMGS[i]} className="rounded-circle border border-2 border-purple" width="40" height="40" alt="" />
+                          )}
+                        </a>
                       </li>
                     );
                   })}
                   {recentDeals.length === 0 && (
                     <li>
-                      <img src={PROFILE_IMGS[0]} className="rounded-circle border border-2 border-purple" width="40" height="40" alt="" />
+                      <a href="javascript:void(0)">
+                        <img src={PROFILE_IMGS[0]} className="rounded-circle border border-2 border-purple" width="40" height="40" alt="" />
+                      </a>
                     </li>
                   )}
                   <li className="ms-n2">
@@ -340,7 +344,7 @@ export default function Dashboard() {
                 </div>
                 <div className="col-lg-4 col-md-4 mt-4">
                   <h2 className="mb-0">{itemsFmt || "0"}</h2>
-                  <small className="fs-3 text-muted">Articles scann&eacute;s</small>
+                  <small className="fs-3 text-muted">Mail Items scann&eacute;s</small>
                 </div>
                 <div className="col-lg-4 col-md-4 mt-4">
                   <h2 className="mb-0">{alertRate}%</h2>
@@ -375,9 +379,10 @@ export default function Dashboard() {
                   </a>
                 ) : (
                   recentDeals.map((d, i) => {
-                    const dotClass = (d.score ?? 0) >= 80 ? "text-bg-secondary" : (d.score ?? 0) >= 60 ? "text-bg-light-indigo" : "text-bg-danger";
+                    const dotClass  = i === 0 ? "text-bg-secondary" : "text-bg-light-indigo";
+                    const rowClass  = i < 2 ? "py-4 hstack px-7 gap-3" : "py-4 pb-7 hstack px-7 gap-8";
                     return (
-                      <a href={d.url ?? "javascript:void(0)"} target={d.url ? "_blank" : undefined} rel="noreferrer" className={`py-4 hstack px-7 gap-3${i === recentDeals.length - 1 ? " pb-7" : ""}`} key={d.id ?? i}>
+                      <a href={d.url ?? "javascript:void(0)"} target={d.url ? "_blank" : undefined} rel="noreferrer" className={rowClass} key={d.id ?? i}>
                         <div className="user-img position-relative">
                           <img src={PROFILE_IMGS[i % 4]} alt="user" className="rounded-circle w-100" />
                           <span className={`profile-status pull-right d-inline-block position-absolute ${dotClass} rounded-circle`}></span>
@@ -389,10 +394,10 @@ export default function Dashboard() {
                           </div>
                           <div className="ms-auto d-flex button-group gap-1">
                             <button type="button" className="btn btn-sm bg-danger-subtle text-danger round-sm rounded-pill m-0">
-                              <span className="fs-2">{d.score ?? "—"}</span>
+                              <i data-feather="video" className="feather-sm"></i>
                             </button>
                             <button type="button" className="btn btn-sm bg-primary-subtle text-primary round-sm rounded-pill m-0">
-                              <iconify-icon icon="solar:arrow-right-up-linear" class="feather-sm"></iconify-icon>
+                              <i data-feather="phone-incoming" className="feather-sm"></i>
                             </button>
                           </div>
                         </div>
@@ -405,30 +410,28 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Current Visitors → Répartition des Scores */}
+        {/* Current Visitors → Origine des Vendeurs */}
         <div className="col-lg-4">
           <div className="card">
             <div className="card-body">
-              <h4 className="card-title">R&eacute;partition des Scores</h4>
-              <p className="card-subtitle">Distribution par tranche de score</p>
-              <div className="my-3 h-280" id="usa" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <ScoreViz high={scoreHigh} mid={scoreMid} low={scoreLow} />
-              </div>
+              <h4 className="card-title">Origine des Vendeurs</h4>
+              <p className="card-subtitle">Different Devices Used to Visit</p>
+              <div className="my-3 h-280" id="usa"></div>
               <div className="text-center">
                 <ul className="list-inline mb-0 hstack justify-content-center">
                   <li className="list-inline-item px-2 me-0">
                     <div className="text-secondary d-flex align-items-center gap-2 fs-3">
-                      <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Score &ge;80
+                      <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Valley
                     </div>
                   </li>
                   <li className="list-inline-item px-2 me-0">
                     <div className="text-primary d-flex align-items-center gap-2 fs-3">
-                      <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Score 60-79
+                      <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>New York
                     </div>
                   </li>
                   <li className="list-inline-item px-2 me-0">
                     <div className="text-danger d-flex align-items-center gap-2 fs-3">
-                      <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Score &lt;60
+                      <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Kansas
                     </div>
                   </li>
                 </ul>
@@ -446,9 +449,9 @@ export default function Dashboard() {
                 <div className="ms-auto">
                   <select className="form-select rounded-pill fw-medium" defaultValue="today">
                     <option value="today">Aujourd&apos;hui</option>
-                    <option value="7d">7 derniers jours</option>
-                    <option value="month">Ce mois-ci</option>
-                    <option value="30d">30 derniers jours</option>
+                    <option value="1">7 derniers jours</option>
+                    <option value="2">Ce mois-ci</option>
+                    <option value="3">30 derniers jours</option>
                   </select>
                 </div>
               </div>
@@ -471,17 +474,17 @@ export default function Dashboard() {
                           const brand      = brandFromTitle(d.title) ?? brandFromTitle(d.model ?? "");
                           const info       = brand ? BRAND_MAP[brand] : null;
                           const score      = d.score ?? 0;
-                          const scoreColor = score >= 80 ? "success" : score >= 60 ? "primary" : "warning";
+                          const scoreColor = score >= 80 ? "success" : score >= 60 ? "primary" : score >= 60 ? "info" : "warning";
                           const isLast     = i === recentDeals.length - 1;
                           return (
                             <tr key={d.id ?? i}>
                               <td className={`ps-0${isLast ? " border-bottom-0" : ""}`}>
                                 <div className="hstack gap-3">
-                                  <span className={`round-48 rounded-circle flex-shrink-0 hstack justify-content-center align-items-center ${info?.bg ?? "bg-primary-subtle"}`}>
+                                  <span className={`round-48 rounded-circle flex-shrink-0 hstack justify-content-center align-items-center ${info?.bg ?? "bg-dark"}`}>
                                     {info ? (
                                       <img src={`https://cdn.simpleicons.org/${info.slug}/ffffff`} alt={brand} width="22" height="22" />
                                     ) : (
-                                      <iconify-icon icon="solar:smartphone-2-line-duotone" class="text-primary fs-5"></iconify-icon>
+                                      <iconify-icon icon="solar:smartphone-2-line-duotone" class="text-white fs-5"></iconify-icon>
                                     )}
                                   </span>
                                   <div>
@@ -517,29 +520,29 @@ export default function Dashboard() {
           <div className="card">
             <div className="card-body">
               <h4 className="card-title">R&eacute;partition par Marque</h4>
-              <p className="card-subtitle">Scores des deals par tranche</p>
+              <p className="card-subtitle">Different Devices Used to Visit</p>
             </div>
             <div id="our-visitors">
               <OurVisitorsDonut
                 series={[scoreHigh, scoreMid, scoreLow]}
-                labels={["Score ≥80", "Score 60-79", "Score <60"]}
+                labels={["Mobile", "Desktop", "Tablet"]}
               />
             </div>
             <div className="card-body d-flex align-items-center justify-content-center border-top mt-3">
               <ul className="list-inline mb-0 hstack justify-content-center">
                 <li className="list-inline-item px-2 me-0">
                   <div className="text-primary d-flex align-items-center gap-2 fs-3">
-                    <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>&ge;80
+                    <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Mobile
                   </div>
                 </li>
                 <li className="list-inline-item px-2 me-0">
-                  <div className="text-purple d-flex align-items-center gap-2 fs-3" style={{ color: "#5e35b1" }}>
-                    <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>60-79
+                  <div className="text-purple d-flex align-items-center gap-2 fs-3">
+                    <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Desktop
                   </div>
                 </li>
                 <li className="list-inline-item px-2 me-0">
                   <div className="text-secondary d-flex align-items-center gap-2 fs-3">
-                    <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>&lt;60
+                    <iconify-icon icon="ri:circle-fill" class="fs-2"></iconify-icon>Tablet
                   </div>
                 </li>
               </ul>
@@ -625,33 +628,5 @@ export default function Dashboard() {
         </div>
       </div>
     </>
-  );
-}
-
-function ScoreViz({ high = 0, mid = 0, low = 0 }) {
-  const total = high + mid + low || 1;
-  const rHigh = Math.max(5, Math.round((high / total) * 20));
-  const rMid  = Math.max(5, Math.round((mid  / total) * 20));
-  const rLow  = Math.max(5, Math.round((low  / total) * 20));
-  return (
-    <svg viewBox="0 0 320 200" width="100%" height="100%" style={{ maxHeight: 220 }} aria-label="Score distribution">
-      <defs>
-        <filter id="bonoitec-glow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="3" />
-        </filter>
-      </defs>
-      <path d="M40 90 L80 60 L130 50 L180 55 L220 50 L260 65 L290 95 L280 130 L260 145 L220 155 L180 150 L140 145 L100 150 L60 135 Z" fill="#c9d6de" stroke="#a9b8c2" strokeWidth="1.5" opacity="0.7" />
-      <g>
-        <circle cx="60"  cy="120" r={rHigh + 8} fill="#26c6da" opacity="0.3" filter="url(#bonoitec-glow)" />
-        <circle cx="60"  cy="120" r={rHigh} fill="#26c6da" />
-        <text x="60"  y="148" textAnchor="middle" fontSize="10" fill="#888">{high}</text>
-        <circle cx="170" cy="115" r={rMid  + 8} fill="#1e88e5" opacity="0.3" filter="url(#bonoitec-glow)" />
-        <circle cx="170" cy="115" r={rMid} fill="#1e88e5" />
-        <text x="170" y="143" textAnchor="middle" fontSize="10" fill="#888">{mid}</text>
-        <circle cx="265" cy="85"  r={rLow  + 8} fill="#fc4b6c" opacity="0.3" filter="url(#bonoitec-glow)" />
-        <circle cx="265" cy="85"  r={rLow} fill="#fc4b6c" />
-        <text x="265" y="113" textAnchor="middle" fontSize="10" fill="#888">{low}</text>
-      </g>
-    </svg>
   );
 }
