@@ -7,7 +7,7 @@
   "scripts": {
     "build": "npm run build:server && npm run dashboard:build",
     "build:server": "tsc",
-    "dashboard:build": "vite build --config dashboard/vite.config.js && node -e \"require('fs').copyFileSync('demo-clone/index.html', 'dist/dashboard/index.html')\"",
+    "dashboard:build": "vite build --config dashboard/vite.config.js && node -e \"const fs=require('fs');let h=fs.readFileSync('demo-clone/index.html','utf8');h=h.replace(/https:\\/\\/bootstrapdemos\\.wrappixel\\.com\\/materialpro\\/dist\\/assets\\//g,'/assets/');fs.writeFileSync('dist/dashboard/index.html',h)\"",
     "dashboard": "npm run build && node dist/src/dashboardServer.js",
     "serve": "node dist/src/dashboardServer.js",
     "start": "npm run build:server && node dist/src/index.js",
