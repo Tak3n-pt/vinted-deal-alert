@@ -7,7 +7,7 @@
   "scripts": {
     "build": "npm run build:server && npm run dashboard:build",
     "build:server": "tsc",
-    "dashboard:build": "vite build --config dashboard/vite.config.js",
+    "dashboard:build": "vite build --config dashboard/vite.config.js && node -e \"require('fs').copyFileSync('demo-clone/index.html', 'dist/dashboard/index.html')\"",
     "dashboard": "npm run build && node dist/src/dashboardServer.js",
     "serve": "node dist/src/dashboardServer.js",
     "start": "npm run build:server && node dist/src/index.js",
