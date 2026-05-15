@@ -7,6 +7,7 @@ const REJECT_PATTERNS: Array<[RegExp, string, string]> = [
   [/\b(?:pour\s*pi[eè]ces|for\s*parts|pi[eè]ces\s*d[eé]tach[eé]es)\b/i, "parts-only", "vendu pour pièces"],
   [/\b(?:ne\s*s['’]?allume\s*pas|does\s*not\s*turn\s*on|dead|hs)\b/i, "does-not-turn-on", "ne s'allume pas"],
   [/\b(?:r[eé]plique|replica|fake|clone|dummy|factice)\b/i, "replica-or-dummy", "réplique ou factice"],
+  [/\b(?:mdm|remote\s*management|gestion\s*[aà]\s*distance|activation\s*lock|verrouillage\s*d['’]activation|frp\s*lock|find\s*my\s*iphone|localiser\s*(?:iphone\s*)?activ[eé]|compte\s*(?:apple|google)\s*bloqu[eé]|t[eé]l[eé]phone\s*(?:perdu|vol[eé]))\b/i, "activation-or-ownership-lock", "verrouillage d'activation / propriété"],
   [/\b(?:apple\s*watch|airpods|ipad)\b/i, "bundle-or-different-device", "lot ou appareil différent"],
   // Vinted scam patterns: sellers asking to leave the platform for payment
   // are a red flag because Vinted's buyer protection doesn't cover off-platform
@@ -18,10 +19,12 @@ const REJECT_PATTERNS: Array<[RegExp, string, string]> = [
   [/\b(?:d[eé]j[aà]\s*(?:vendu|reserv[eé])|sold\s*out|annonce\s*r[eé]serv[eé]e?|article\s*r[eé]serv[eé]e?)\b/i, "already-sold", "déjà vendu / réservé"]
 ];
 
-const ACCESSORY_ONLY_PATTERNS: RegExp[] = [
-  /\b(?:coque|case|cover|housse|etui|[eé]tui|funda|hoesje|h[uü]lle|capa|custodia|bumper|burga)\b/i,
+const ACCESSORY_HEAD_RE =
+  /^(?:lot\s+de\s+)?(?:coque|case|cover|housse|etui|[eé]tui|funda|hoesje|h[uü]lle|capa|custodia|bumper|chargeur|charger|cable|c[âa]ble|adapter|adaptateur|accessoire|protection|protector|verre\s*tremp[eé]|film\s*(?:protecteur|protection))\b/i;
+
+const ACCESSORY_STRONG_PATTERNS: RegExp[] = [
+  /\b(?:burga|screen\s*protector|verre\s*tremp[eé]|film\s*(?:protecteur|protection))\b/i,
   /\b(?:display|schermo|lcd|screen|[eé]cran)\s+(?:original|originale|for|pour|iphone|samsung|galaxy)\b/i,
-  /\b(?:chargeur|charger|cable|c[âa]ble|adapter|adaptateur|accessoire|protection|protector|screen\s*protector|verre\s*tremp[eé]|film\s*(?:protecteur|protection))\b/i,
   /\b(?:lot\s+de\s+)?(?:coques|cases|covers|housses|etuis|[eé]tuis|fundas|hoesjes|h[uü]llen|chargeurs|chargers|cables|accessoires|protections)\b/i,
   // Replacement parts often listed with the model name in the title.
   /\b(?:vitre\s*(?:arri[eè]re|avant)|battery\s*(?:replacement|remplacement)|batterie\s*(?:de\s*remplacement|seule)|nappe|connecteur|haut[\s-]parleur|micro|caméra|camera)\s+(?:pour\s+)?(?:iphone|samsung|galaxy|pixel)/i
@@ -121,9 +124,10 @@ function dedupeSignals(signals: RiskSignal[]): RiskSignal[] {
 }
 
 function isAccessoryOnly(title: string, description: string): boolean {
-  const titleMatches = ACCESSORY_ONLY_PATTERNS.some((pattern) => pattern.test(title));
-  if (titleMatches) return true;
+  const normalizedTitle = title.trim();
+  if (ACCESSORY_HEAD_RE.test(normalizedTitle)) return true;
+  if (ACCESSORY_STRONG_PATTERNS.some((pattern) => pattern.test(normalizedTitle))) return true;
 
   const combined = `${title} ${description}`;
-  return /\b(?:vendu|article|annonce|listing)\s*:?\s*(?:coque|case|cover|housse|etui|[eé]tui|funda|hoesje|chargeur|charger|cable|c[âa]ble|accessoire|protection)\b/i.test(combined);
+  return /\b(?:article|annonce|listing)\s*:?\s*(?:coque|case|cover|housse|etui|[eé]tui|funda|hoesje|chargeur|charger|cable|c[âa]ble|accessoire|protection)\b/i.test(combined);
 }

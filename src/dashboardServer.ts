@@ -280,9 +280,78 @@ async function handleApi(
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/internal/subscription-sync") {
+    const expectedSecret = process.env.BOT_SYNC_SECRET ?? process.env.SUBSCRIPTION_SYNC_SECRET ?? "";
+    if (!expectedSecret) throw new HttpError(503, "Subscription sync secret not configured");
+    const providedSecret = syncSecret(req);
+    if (!providedSecret || !safeSecretEquals(providedSecret, expectedSecret)) {
+      throw new HttpError(401, "Invalid subscription sync secret");
+    }
+
+    const body = await readJson<{
+      discordId?: string;
+      active?: boolean;
+      plan?: string | null;
+      currentPeriodEnd?: number | null;
+      eventType?: string | null;
+      subscriptionId?: string | null;
+    }>(req);
+    if (!body.discordId || !/^\d{17,19}$/.test(body.discordId)) throw new HttpError(400, "discordId invalide");
+    if (typeof body.active !== "boolean") throw new HttpError(400, "active doit être un booléen");
+
+    const user = await dashboardStore.syncSubscriptionAccess({
+      discordId: body.discordId,
+      active: body.active,
+      paidQuota: intFromEnv("PRO_DAILY_APIFY_QUOTA", 500),
+      freeQuota: intFromEnv("FREE_DAILY_APIFY_QUOTA", 30),
+      source: [body.eventType, body.plan].filter(Boolean).join(" / ")
+    });
+    sendJson(res, 200, {
+      ok: true,
+      user: {
+        id: user.id,
+        discordId: user.discordId,
+        plan: user.plan,
+        dailyApifyQuota: user.dailyApifyQuota,
+        betaApproved: user.betaApproved
+      }
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/internal/access-check") {
+    const expectedSecret = process.env.BOT_SYNC_SECRET ?? process.env.SUBSCRIPTION_SYNC_SECRET ?? "";
+    if (!expectedSecret) throw new HttpError(503, "Access check secret not configured");
+    const providedSecret = syncSecret(req);
+    if (!providedSecret || !safeSecretEquals(providedSecret, expectedSecret)) {
+      throw new HttpError(401, "Invalid access check secret");
+    }
+    const body = await readJson<{ discordId?: string }>(req);
+    if (!body.discordId || !/^\d{17,19}$/.test(body.discordId)) throw new HttpError(400, "discordId invalide");
+
+    const user = await dashboardStore.getUserByDiscordId(body.discordId);
+    const active = Boolean(user && (user.plan === "admin" || user.betaApproved));
+    sendJson(res, 200, {
+      ok: true,
+      active,
+      user: user
+        ? {
+            id: user.id,
+            discordId: user.discordId,
+            plan: user.plan,
+            betaApproved: user.betaApproved,
+            dailyApifyQuota: user.dailyApifyQuota
+          }
+        : null
+    });
+    return;
+  }
+
+  const proxyUserId = await internalProxyUserId(req, dashboardStore);
   const token = sessionToken(req);
-  const userId = token ? await dashboardStore.getSessionUser(hashToken(token)) : null;
-  if (!token || !userId) {
+  const sessionUserId = token ? await dashboardStore.getSessionUser(hashToken(token)) : null;
+  const userId = proxyUserId ?? sessionUserId;
+  if (!userId) {
     throw new HttpError(401, "Authentification requise");
   }
   const sessionUser = await dashboardStore.getUserById(userId);
@@ -297,12 +366,13 @@ async function handleApi(
   // x-forwarded-for. Login is excluded (it has its own limiter); reads are
   // unrestricted.
   const isMutation = req.method === "POST" || req.method === "PUT" || req.method === "DELETE" || req.method === "PATCH";
-  if (isMutation && recordWriteAttempt(writeAttempts, hashToken(token))) {
+  const writeKey = proxyUserId ? `proxy:${proxyUserId}` : token ? hashToken(token) : clientKey(req);
+  if (isMutation && recordWriteAttempt(writeAttempts, writeKey)) {
     throw new HttpError(429, "Trop de modifications consécutives. Réessayer dans quelques secondes.");
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
-    await dashboardStore.deleteSession(hashToken(token));
+    if (token) await dashboardStore.deleteSession(hashToken(token));
     res.setHeader("set-cookie", sessionCookie(`${SESSION_COOKIE}=; Max-Age=0`));
     sendJson(res, 200, { authenticated: false });
     return;
@@ -562,6 +632,63 @@ function safePasswordEquals(input: string, expected: string): boolean {
   const expectedBuffer = Buffer.from(expected);
   if (inputBuffer.length !== expectedBuffer.length) return false;
   return timingSafeEqual(inputBuffer, expectedBuffer);
+}
+
+function safeSecretEquals(input: string, expected: string): boolean {
+  return safePasswordEquals(input, expected);
+}
+
+function syncSecret(req: IncomingMessage): string {
+  const explicit = req.headers["x-bot-sync-secret"];
+  if (typeof explicit === "string") return explicit;
+  const authorization = req.headers.authorization ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
+  return match?.[1] ?? "";
+}
+
+function headerValue(req: IncomingMessage, name: string): string {
+  const value = req.headers[name.toLowerCase()];
+  return (Array.isArray(value) ? value[0] ?? "" : value ?? "").trim();
+}
+
+async function internalProxyUserId(req: IncomingMessage, dashboardStore: DashboardStore): Promise<number | null> {
+  const discordId = headerValue(req, "x-bonoitec-discord-id");
+  if (!discordId) return null;
+
+  const expectedSecret = process.env.BOT_SYNC_SECRET ?? process.env.SUBSCRIPTION_SYNC_SECRET ?? "";
+  if (!expectedSecret) throw new HttpError(503, "Bot proxy secret not configured");
+  const providedSecret = syncSecret(req);
+  if (!providedSecret || !safeSecretEquals(providedSecret, expectedSecret)) {
+    throw new HttpError(401, "Invalid bot proxy secret");
+  }
+  if (!/^\d{17,19}$/.test(discordId)) throw new HttpError(400, "discordId invalide");
+
+  const username = headerValue(req, "x-bonoitec-discord-username") || discordId;
+  const avatar = headerValue(req, "x-bonoitec-discord-avatar") || null;
+  let user = await dashboardStore.getUserByDiscordId(discordId);
+
+  if ((!user || (user.plan !== "admin" && !user.betaApproved)) && headerValue(req, "x-bonoitec-access-active") === "1") {
+    user = await dashboardStore.syncSubscriptionAccess({
+      discordId,
+      active: true,
+      paidQuota: intFromEnv("PRO_DAILY_APIFY_QUOTA", 500),
+      freeQuota: intFromEnv("FREE_DAILY_APIFY_QUOTA", 30),
+      source: `vercel proxy / ${headerValue(req, "x-bonoitec-access-plan") || "pro"}`
+    });
+  }
+
+  if (!user) throw new HttpError(403, "Compte bot non activé");
+  user = await dashboardStore.upsertUserFromDiscord({ id: discordId, username, avatar });
+  if (user.plan !== "admin" && !user.betaApproved) {
+    throw new HttpError(403, "Abonnement requis");
+  }
+  return user.id;
+}
+
+function intFromEnv(key: string, fallback: number): number {
+  const value = Number(process.env[key] ?? fallback);
+  if (!Number.isFinite(value) || value < 0) return fallback;
+  return Math.floor(value);
 }
 
 function clientKey(req: IncomingMessage): string {

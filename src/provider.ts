@@ -4,6 +4,59 @@ export interface ListingProvider {
   search(search: SearchConfig): Promise<Listing[]>;
 }
 
+export class SearchResultCache {
+  readonly stats = { hits: 0, misses: 0 };
+  private readonly cache = new Map<string, Promise<Listing[]>>();
+
+  async getOrFetch(namespace: string, search: SearchConfig, fetcher: () => Promise<Listing[]>): Promise<Listing[]> {
+    const key = `${namespace}|${searchCacheKey(search)}`;
+    const cached = this.cache.get(key);
+    if (cached) {
+      this.stats.hits += 1;
+      return cloneListings(await cached);
+    }
+
+    this.stats.misses += 1;
+    const promise = fetcher()
+      .then((listings) => cloneListings(listings))
+      .catch((error) => {
+        this.cache.delete(key);
+        throw error;
+      });
+    this.cache.set(key, promise);
+    return cloneListings(await promise);
+  }
+}
+
+export class CachedListingProvider implements ListingProvider {
+  constructor(
+    private readonly upstream: ListingProvider,
+    private readonly cache: SearchResultCache,
+    private readonly namespace = "default"
+  ) {}
+
+  search(search: SearchConfig): Promise<Listing[]> {
+    return this.cache.getOrFetch(this.namespace, search, () => this.upstream.search(search));
+  }
+}
+
+export function providerCacheNamespace(config: RuntimeConfig): string {
+  return [
+    config.providerType,
+    config.providerType === "apify" ? config.apifyActorId : config.authorizedDataApiUrl
+  ].join("|");
+}
+
+export function searchCacheKey(search: SearchConfig): string {
+  return JSON.stringify({
+    market: search.market,
+    query: search.query.trim().toLowerCase(),
+    url: normalizeSearchUrl(search.url),
+    limit: Math.max(1, Math.floor(search.limit)),
+    sort: search.sort
+  });
+}
+
 export function createListingProvider(config: RuntimeConfig): ListingProvider {
   if (config.providerType === "apify") return new ApifyVintedProvider(config);
   return new AuthorizedListingProvider(config);
@@ -289,4 +342,20 @@ function vintedUrlFromPath(path: unknown): string {
 function mainPhoto(photos: NonNullable<RawListing["photos"]>): NonNullable<RawListing["photos"]>[number] | undefined {
   const objectPhotos = photos.filter((photo): photo is Exclude<typeof photo, string> => typeof photo === "object" && photo !== null);
   return objectPhotos.find((photo) => photo.is_main) ?? photos[0];
+}
+
+function normalizeSearchUrl(value: string | undefined): string {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.searchParams.sort();
+    return url.toString();
+  } catch {
+    return value.trim();
+  }
+}
+
+function cloneListings(listings: Listing[]): Listing[] {
+  return listings.map((listing) => ({ ...listing }));
 }

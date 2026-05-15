@@ -20,6 +20,11 @@ test("does not reject a real phone listing that includes accessories", () => {
   assert.equal(risks.some((risk) => risk.label === "accessoire uniquement"), false);
 });
 
+test("does not reject a real phone listing that mentions a case in the title", () => {
+  const risks = findRiskSignals(listing("iPhone 15 Pro Max 256Go avec coque", "Tres bon etat, facture"));
+  assert.equal(risks.some((risk) => risk.label === "accessoire uniquement"), false);
+});
+
 test("still rejects accessory-only listings", () => {
   const risks = findRiskSignals(listing("Coque pour iPhone 15 Pro Max", "Protection silicone neuve"));
   assert.equal(risks.some((risk) => risk.label === "accessoire uniquement" && risk.severity === "reject"), true);
@@ -106,6 +111,21 @@ test("rejects replacement-part listings that include a phone model name", () => 
 test("rejects already-sold or reserved listings", () => {
   const risks = findRiskSignals(listing("iPhone 15 Pro Max 256Go", "Annonce reservee, en attente paiement"));
   assert.equal(risks.some((risk) => risk.code === "already-sold" && risk.severity === "reject"), true);
+});
+
+test("rejects activation lock and stolen-device wording", () => {
+  for (const description of [
+    "Remote management MDM actif",
+    "Activation lock impossible a enlever",
+    "Telephone perdu retrouve, compte Apple bloque"
+  ]) {
+    const risks = findRiskSignals(listing("iPhone 15 Pro Max 256Go", description));
+    assert.equal(
+      risks.some((risk) => risk.code === "activation-or-ownership-lock" && risk.severity === "reject"),
+      true,
+      description
+    );
+  }
 });
 
 test("flags non-original screens as high risk", () => {

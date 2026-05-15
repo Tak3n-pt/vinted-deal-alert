@@ -1,7 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ApifyVintedProvider, AuthorizedListingProvider, extractRawListings, normalizeListing, normalizeSellerRating, toApifyInput } from "../src/provider.js";
-import type { RuntimeConfig } from "../src/types.js";
+import {
+  ApifyVintedProvider,
+  AuthorizedListingProvider,
+  CachedListingProvider,
+  SearchResultCache,
+  extractRawListings,
+  normalizeListing,
+  normalizeSellerRating,
+  searchCacheKey,
+  toApifyInput
+} from "../src/provider.js";
+import type { Listing, RuntimeConfig } from "../src/types.js";
 
 test("extracts items from common provider shapes", () => {
   assert.equal(extractRawListings([{ id: 1 }]).length, 1);
@@ -102,6 +112,37 @@ test("builds Apify actor input from a filtered Vinted URL", () => {
   });
 });
 
+test("search cache reuses identical searches during one scan tick", async () => {
+  let calls = 0;
+  const listing = cachedListing("1");
+  const upstream = {
+    search: async () => {
+      calls += 1;
+      return [listing];
+    }
+  };
+  const cache = new SearchResultCache();
+  const provider = new CachedListingProvider(upstream, cache, "apify|actor");
+  const search = { market: "FR", query: "iPhone 15 Pro", limit: 10, sort: "newest" } as const;
+
+  const first = await provider.search(search);
+  const second = await provider.search({ ...search, query: " iphone 15 pro " });
+
+  assert.equal(calls, 1);
+  assert.equal(cache.stats.hits, 1);
+  assert.equal(cache.stats.misses, 1);
+  assert.deepEqual(first, second);
+  assert.notEqual(first, second);
+});
+
+test("search cache key keeps limits separate", () => {
+  const base = { market: "FR", query: "iphone 15 pro", sort: "newest" } as const;
+  assert.notEqual(
+    searchCacheKey({ ...base, limit: 10 }),
+    searchCacheKey({ ...base, limit: 50 })
+  );
+});
+
 test("normalizeSellerRating rescales 0-1 ratios, leaves 0-5 stars alone", () => {
   // 0-5 star inputs pass through.
   assert.equal(normalizeSellerRating(4.9), 4.9);
@@ -198,5 +239,17 @@ function config(overrides: Partial<RuntimeConfig> = {}): RuntimeConfig {
     runOnStart: false,
     dryRun: true,
     ...overrides
+  };
+}
+
+function cachedListing(id: string): Listing {
+  return {
+    id,
+    title: "iPhone 15 Pro 128Go",
+    description: "",
+    price: 500,
+    currency: "EUR",
+    url: `https://example.test/${id}`,
+    raw: {}
   };
 }

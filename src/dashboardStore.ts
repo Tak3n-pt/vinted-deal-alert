@@ -220,19 +220,22 @@ export class DashboardStore {
   ): Promise<DashboardRuntimeSnapshot> {
     const view = await this.settingsView(baseConfig);
     const secrets = await this.secrets();
+    const userSettings = await this.getUserSettings(userId);
+    const effectivePollInterval = userId === 1 ? view.pollIntervalSeconds : userSettings.pollIntervalSeconds;
+    const effectiveDryRun = userId === 1 ? view.dryRun : view.dryRun || userSettings.dryRun;
     const config: RuntimeConfig = {
       providerType: view.providerType,
       authorizedDataApiUrl: view.authorizedDataApiUrl,
       authorizedDataApiKey: secrets.authorizedDataApiKey ?? baseConfig.authorizedDataApiKey,
       apifyActorId: view.apifyActorId,
       discordWebhookUrl: secrets.discordWebhookUrl ?? baseConfig.discordWebhookUrl,
-      pollIntervalSeconds: view.pollIntervalSeconds,
+      pollIntervalSeconds: effectivePollInterval,
       providerTimeoutSeconds: view.providerTimeoutSeconds,
       maxProductsPerScan: view.maxProductsPerScan,
       heartbeatEveryScans: view.heartbeatEveryScans,
       databasePath: baseConfig.databasePath,
       runOnStart: view.runOnStart,
-      dryRun: view.dryRun
+      dryRun: effectiveDryRun
     };
     const apifyToken = secrets.apifyToken ?? baseConfig.apifyToken;
     if (apifyToken) config.apifyToken = apifyToken;
@@ -248,7 +251,6 @@ export class DashboardStore {
     // user_settings as percent (0..100); scoring expects a 0..1 fraction.
     // If null, falls back to the global value — admins can set a baseline
     // and users opt into stricter thresholds.
-    const userSettings = await this.getUserSettings(userId);
     const effectiveMinDiscount = userSettings.minDiscountPct != null
       ? userSettings.minDiscountPct / 100
       : view.minDiscount;
@@ -294,7 +296,7 @@ export class DashboardStore {
       select u.* from users u
       inner join user_settings s on s.user_id = u.id
       where (u.plan = 'admin' or u.beta_approved = 1)
-        and (s.discord_webhook_configured = 1 or u.id = 1)
+        and (s.discord_webhook_configured = 1 or s.dry_run = 1 or u.id = 1)
       order by u.id asc
     `);
     return rows.map(userFromRow);
@@ -759,6 +761,58 @@ export class DashboardStore {
 
   async setUserBetaApproved(id: number, approved: boolean): Promise<void> {
     await this.db.run("update users set beta_approved = ? where id = ?", [approved ? 1 : 0, id]);
+  }
+
+  async syncSubscriptionAccess(input: {
+    discordId: string;
+    active: boolean;
+    paidQuota: number;
+    freeQuota: number;
+    source?: string;
+  }): Promise<User> {
+    const discordId = input.discordId.trim();
+    if (!/^\d{17,19}$/.test(discordId)) throw new Error("discordId invalide");
+    const paidQuota = nonNegativeInt(input.paidQuota, "paidQuota");
+    const freeQuota = nonNegativeInt(input.freeQuota, "freeQuota");
+    const quota = input.active ? paidQuota : freeQuota;
+    const betaApproved = input.active ? 1 : 0;
+    const plan: User["plan"] = input.active ? "pro" : "free";
+
+    let row = await this.db.get("select * from users where discord_id = ?", [discordId]);
+    if (!row) {
+      await this.db.run(
+        `insert into users (discord_id, discord_username, plan, daily_apify_quota, beta_approved)
+         values (?, ?, ?, ?, ?)`,
+        [discordId, null, plan, quota, betaApproved]
+      );
+      row = await this.db.get("select * from users where discord_id = ?", [discordId]);
+    } else if (row.plan !== "admin") {
+      await this.db.run(
+        "update users set plan = ?, daily_apify_quota = ?, beta_approved = ? where discord_id = ?",
+        [plan, quota, betaApproved, discordId]
+      );
+      row = await this.db.get("select * from users where discord_id = ?", [discordId]);
+    }
+
+    if (!row) throw new Error("syncSubscriptionAccess: user row missing after sync");
+    const user = userFromRow(row);
+    await this.db.run(
+      this.db.dialect === "postgres"
+        ? "insert into user_settings (user_id) values (?) on conflict (user_id) do nothing"
+        : "insert or ignore into user_settings (user_id) values (?)",
+      [user.id]
+    );
+    if (user.id !== 1) await this.seedNewUserDefaults(user.id);
+
+    const source = input.source ? ` (${input.source.slice(0, 80)})` : "";
+    await this.log(
+      "info",
+      input.active
+        ? `Abonnement synchronisé : accès pro activé${source}`
+        : `Abonnement synchronisé : accès retiré${source}`,
+      user.id
+    );
+    return user;
   }
 
   /**

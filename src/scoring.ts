@@ -136,10 +136,11 @@ export function scoreListing(
   const penalty = riskPenalty(risks);
   const sellerScore = sellerConfidence(listing);
   const freshnessScore = freshness(listing);
+  const allowlistScore = isSellerAllowlisted(listing, options.riskRules) ? 3 : 0;
   const discountScore = Math.min(45, discountPercent * 140);
   const savingsScore = Math.min(20, savings / 8);
   const matchScore = match.confidence * 15;
-  const score = clamp(Math.round(discountScore + savingsScore + sellerScore + freshnessScore + matchScore - penalty), 0, 100);
+  const score = clamp(Math.round(discountScore + savingsScore + sellerScore + freshnessScore + matchScore + allowlistScore - penalty), 0, 100);
 
   const modelRule = findModelRule(match, options.modelRules);
   const threshold = alertThreshold(match, options, modelRule);
@@ -164,7 +165,7 @@ export function scoreListing(
     savings,
     score,
     risks,
-    reasons: dealReasons(discountPercent, savings, sellerScore, freshnessScore, risks),
+    reasons: dealReasons(discountPercent, savings, sellerScore, freshnessScore, allowlistScore, risks),
     rejectionReasons,
     shouldAlert: rejectionReasons.length === 0
   };
@@ -604,6 +605,14 @@ function sellerRiskSignals(listing: Listing, discountPercent: number): RiskSigna
   return signals;
 }
 
+function isSellerAllowlisted(listing: Listing, rules: RiskRules | undefined): boolean {
+  if (!rules?.sellerAllowlist?.length) return false;
+  const candidates = [listing.sellerName, listing.sellerProfileUrl]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.trim().toLowerCase());
+  return rules.sellerAllowlist.some((allowed) => candidates.includes(allowed.trim().toLowerCase()));
+}
+
 function sellerAccountAgeDays(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const timestamp = Date.parse(value);
@@ -754,6 +763,7 @@ function dealReasons(
   savings: number,
   sellerScore: number,
   freshnessScore: number,
+  allowlistScore: number,
   risks: RiskSignal[]
 ): string[] {
   const reasons = [
@@ -761,6 +771,7 @@ function dealReasons(
     `${Math.round(savings)} EUR d'économie estimée`
   ];
   if (sellerScore >= 10) reasons.push("vendeur bien noté");
+  if (allowlistScore > 0) reasons.push("vendeur autorisé");
   if (freshnessScore >= 5) reasons.push("annonce récente");
   if (risks.length) reasons.push(`notes de risque : ${risks.map((risk) => risk.label).join(", ")}`);
   return reasons;

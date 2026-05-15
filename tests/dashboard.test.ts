@@ -226,6 +226,168 @@ test("dashboard rate limits repeated failed logins", async () => {
   }
 });
 
+test("runtime snapshot honors per-user SaaS scan settings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vinted-user-settings-"));
+  const databasePath = join(dir, "deals.sqlite");
+  const fallbackSearches: SearchConfig[] = [{ market: "FR", query: "iphone 15 pro 256go", limit: 10, sort: "newest" }];
+  const baseConfig = { ...config(databasePath), dryRun: false, pollIntervalSeconds: 3600 };
+  const store = await DashboardStore.open(databasePath);
+  try {
+    await store.ensureDefaults(fallbackSearches);
+    await store.updateSettings({ dryRun: false, pollIntervalSeconds: 3600 });
+    const user = await store.upsertUserFromDiscord({
+      id: "123456789012345678",
+      username: "buyer",
+      avatar: null,
+      email: null
+    });
+    await store.setUserBetaApproved(user.id, true);
+    await store.updateUserSettings(user.id, {
+      dryRun: true,
+      pollIntervalSeconds: 120,
+      minDiscountPct: 35,
+      maxProductPrice: 700
+    });
+
+    const userSnapshot = await store.runtimeSnapshot(baseConfig, fallbackSearches, user.id);
+    assert.equal(userSnapshot.config.dryRun, true);
+    assert.equal(userSnapshot.config.pollIntervalSeconds, 120);
+    assert.equal(userSnapshot.scoringOptions.minDiscount, 0.35);
+    assert.equal(
+      userSnapshot.scoringOptions.modelRules?.every((rule) => rule.maxFinalPrice !== undefined && rule.maxFinalPrice <= 700),
+      true
+    );
+
+    const adminSnapshot = await store.runtimeSnapshot(baseConfig, fallbackSearches, 1);
+    assert.equal(adminSnapshot.config.dryRun, false);
+    assert.equal(adminSnapshot.config.pollIntervalSeconds, 3600);
+
+    const activeUsers = await store.listActiveUsers();
+    assert.equal(activeUsers.some((active) => active.id === user.id), true);
+  } finally {
+    await store.close();
+  }
+});
+
+test("subscription sync endpoint updates bot user plan and quota", async () => {
+  const previousSecret = process.env.BOT_SYNC_SECRET;
+  const previousProQuota = process.env.PRO_DAILY_APIFY_QUOTA;
+  const previousFreeQuota = process.env.FREE_DAILY_APIFY_QUOTA;
+  process.env.BOT_SYNC_SECRET = "sync-secret";
+  process.env.PRO_DAILY_APIFY_QUOTA = "777";
+  process.env.FREE_DAILY_APIFY_QUOTA = "33";
+
+  const fixture = await dashboardFixture();
+  try {
+    const denied = await fetch(`${fixture.origin}/api/internal/subscription-sync`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ discordId: "123456789012345678", active: true })
+    });
+    assert.equal(denied.status, 401);
+
+    const activated = await jsonFetch<{ user: { plan: string; dailyApifyQuota: number; betaApproved: boolean } }>(
+      `${fixture.origin}/api/internal/subscription-sync`,
+      {
+        method: "POST",
+        body: { discordId: "123456789012345678", active: true, plan: "monthly", eventType: "checkout.session.completed" },
+        headers: { authorization: "Bearer sync-secret" }
+      }
+    );
+    assert.equal(activated.user.plan, "pro");
+    assert.equal(activated.user.dailyApifyQuota, 777);
+    assert.equal(activated.user.betaApproved, true);
+    const paidUser = await fixture.store.getUserByDiscordId("123456789012345678");
+    assert.equal(paidUser?.plan, "pro");
+    const activeCheck = await jsonFetch<{ active: boolean; user: { plan: string } | null }>(
+      `${fixture.origin}/api/internal/access-check`,
+      {
+        method: "POST",
+        body: { discordId: "123456789012345678" },
+        headers: { authorization: "Bearer sync-secret" }
+      }
+    );
+    assert.equal(activeCheck.active, true);
+    assert.equal(activeCheck.user?.plan, "pro");
+
+    const canceled = await jsonFetch<{ user: { plan: string; dailyApifyQuota: number; betaApproved: boolean } }>(
+      `${fixture.origin}/api/internal/subscription-sync`,
+      {
+        method: "POST",
+        body: { discordId: "123456789012345678", active: false, plan: "monthly", eventType: "customer.subscription.deleted" },
+        headers: { "x-bot-sync-secret": "sync-secret" }
+      }
+    );
+    assert.equal(canceled.user.plan, "free");
+    assert.equal(canceled.user.dailyApifyQuota, 33);
+    assert.equal(canceled.user.betaApproved, false);
+    const inactiveCheck = await jsonFetch<{ active: boolean }>(
+      `${fixture.origin}/api/internal/access-check`,
+      {
+        method: "POST",
+        body: { discordId: "123456789012345678" },
+        headers: { "x-bot-sync-secret": "sync-secret" }
+      }
+    );
+    assert.equal(inactiveCheck.active, false);
+  } finally {
+    await fixture.close();
+    if (previousSecret === undefined) delete process.env.BOT_SYNC_SECRET;
+    else process.env.BOT_SYNC_SECRET = previousSecret;
+    if (previousProQuota === undefined) delete process.env.PRO_DAILY_APIFY_QUOTA;
+    else process.env.PRO_DAILY_APIFY_QUOTA = previousProQuota;
+    if (previousFreeQuota === undefined) delete process.env.FREE_DAILY_APIFY_QUOTA;
+    else process.env.FREE_DAILY_APIFY_QUOTA = previousFreeQuota;
+  }
+});
+
+test("internal Vercel proxy authenticates paid dashboard users by Discord ID", async () => {
+  const previousSecret = process.env.BOT_SYNC_SECRET;
+  const previousProQuota = process.env.PRO_DAILY_APIFY_QUOTA;
+  const previousFreeQuota = process.env.FREE_DAILY_APIFY_QUOTA;
+  process.env.BOT_SYNC_SECRET = "proxy-secret";
+  process.env.PRO_DAILY_APIFY_QUOTA = "888";
+  process.env.FREE_DAILY_APIFY_QUOTA = "44";
+
+  const fixture = await dashboardFixture();
+  try {
+    const denied = await fetch(`${fixture.origin}/api/deals`, {
+      headers: {
+        "x-bonoitec-discord-id": "223456789012345678",
+        "x-bot-sync-secret": "wrong",
+        "x-bonoitec-access-active": "1"
+      }
+    });
+    assert.equal(denied.status, 401);
+
+    const response = await jsonFetch<{ deals: unknown[] }>(`${fixture.origin}/api/deals`, {
+      headers: {
+        "x-bonoitec-discord-id": "223456789012345678",
+        "x-bonoitec-discord-username": "paid-buyer",
+        "x-bonoitec-discord-avatar": "avatar-hash",
+        "x-bot-sync-secret": "proxy-secret",
+        "x-bonoitec-access-active": "1",
+        "x-bonoitec-access-plan": "monthly"
+      }
+    });
+    assert.equal(Array.isArray(response.deals), true);
+
+    const user = await fixture.store.getUserByDiscordId("223456789012345678");
+    assert.equal(user?.plan, "pro");
+    assert.equal(user?.dailyApifyQuota, 888);
+    assert.equal(user?.betaApproved, true);
+    assert.equal(user?.discordUsername, "paid-buyer");
+  } finally {
+    await fixture.close();
+    if (previousSecret === undefined) delete process.env.BOT_SYNC_SECRET;
+    else process.env.BOT_SYNC_SECRET = previousSecret;
+    if (previousProQuota === undefined) delete process.env.PRO_DAILY_APIFY_QUOTA;
+    else process.env.PRO_DAILY_APIFY_QUOTA = previousProQuota;
+    if (previousFreeQuota === undefined) delete process.env.FREE_DAILY_APIFY_QUOTA;
+    else process.env.FREE_DAILY_APIFY_QUOTA = previousFreeQuota;
+  }
+});
+
 async function dashboardFixture(): Promise<{
   origin: string;
   store: DashboardStore;
@@ -293,12 +455,16 @@ async function loginCookie(origin: string): Promise<string> {
   return cookie;
 }
 
-async function jsonFetch<T>(url: string, options: { cookie?: string; method?: string; body?: unknown } = {}): Promise<T> {
+async function jsonFetch<T>(
+  url: string,
+  options: { cookie?: string; method?: string; body?: unknown; headers?: Record<string, string> } = {}
+): Promise<T> {
   const init: RequestInit = {
     method: options.method ?? "GET",
     headers: {
       ...(options.cookie ? { cookie: options.cookie } : {}),
-      ...(options.body ? { "content-type": "application/json" } : {})
+      ...(options.body ? { "content-type": "application/json" } : {}),
+      ...options.headers
     }
   };
   if (options.body) init.body = JSON.stringify(options.body);

@@ -1,9 +1,9 @@
-import { createListingProvider } from "./provider.js";
+import { CachedListingProvider, SearchResultCache, createListingProvider, providerCacheNamespace } from "./provider.js";
 import { DiscordWebhook } from "./discord.js";
 import { runScan } from "./index.js";
 import type { DealStore } from "./store.js";
 import type { RuntimeConfig, SearchConfig } from "./types.js";
-import type { DealCandidateRecord, ScanRunRecord, User } from "./dashboardTypes.js";
+import type { DealCandidateRecord, ScanRunRecord, User, UserSettings } from "./dashboardTypes.js";
 import { DashboardStore } from "./dashboardStore.js";
 
 export interface BotStatus {
@@ -26,6 +26,7 @@ export class BotController {
   private nextScanAt: Date | undefined;
   private started = false;
   private scheduledScanCount = 0;
+  private readonly nextUserScanAt = new Map<number, number>();
 
   constructor(
     private readonly baseConfig: RuntimeConfig,
@@ -45,7 +46,7 @@ export class BotController {
         });
       });
     }
-    this.scheduleNext(snapshot.config.pollIntervalSeconds);
+    this.scheduleNext(await this.nextSchedulerDelaySeconds(snapshot.config.pollIntervalSeconds));
   }
 
   async scanNow(): Promise<ScanRunRecord | undefined> {
@@ -98,17 +99,24 @@ export class BotController {
     }
 
     this.scanInFlight = true;
+    const searchCache = new SearchResultCache();
     try {
       const users = await this.dashboardStore.listActiveUsers();
       if (users.length === 0) {
         await this.dashboardStore.log("info", "Aucun utilisateur actif — scan ignoré");
         return;
       }
+      const startedAt = Date.now();
+      const globalIntervalSeconds = (await this.dashboardStore.runtimeSnapshot(this.baseConfig, this.fallbackSearches)).config.pollIntervalSeconds;
       // Sequential per-user scans. Parallelizing would multiply Apify spend
       // and risk rate limits — V1 trades latency for cost predictability.
       for (const user of users) {
+        const userSettings = await this.dashboardStore.getUserSettings(user.id);
+        if (source === "scheduled" && !this.isUserScanDue(user.id, startedAt)) {
+          continue;
+        }
         try {
-          await this.scanForUser(user, source);
+          await this.scanForUser(user, source, searchCache);
         } catch (error) {
           // Per-user errors are isolated — one failure shouldn't block others
           await this.dashboardStore.log(
@@ -116,7 +124,12 @@ export class BotController {
             `Scan utilisateur échoué : ${messageFromError(error)}`,
             user.id
           ).catch(() => undefined);
+        } finally {
+          this.markUserScanned(user.id, userSettings, globalIntervalSeconds);
         }
+      }
+      if (searchCache.stats.hits > 0) {
+        console.log(`[scan-cache] recherches réutilisées=${searchCache.stats.hits} appels provider=${searchCache.stats.misses}`);
       }
     } finally {
       this.scanInFlight = false;
@@ -137,7 +150,7 @@ export class BotController {
    * Run a scan for one specific user. Skips quota-exceeded users and users
    * without a webhook. Records usage_log on success.
    */
-  private async scanForUser(user: User, source: ScanRunRecord["source"]): Promise<void> {
+  private async scanForUser(user: User, source: ScanRunRecord["source"], searchCache: SearchResultCache): Promise<void> {
     // Quota gate
     const used = await this.dashboardStore.getDailyUsage(user.id);
     if (used >= user.dailyApifyQuota) {
@@ -149,26 +162,31 @@ export class BotController {
       return;
     }
 
+    const snapshot = await this.dashboardStore.runtimeSnapshot(this.baseConfig, this.fallbackSearches, user.id);
+
     // Webhook resolution. Seed admin falls back to env's DISCORD_WEBHOOK_URL
     // for legacy compatibility; everyone else must configure via the dashboard.
     let webhookUrl = await this.dashboardStore.getDecryptedWebhook(user.id);
     if (!webhookUrl && user.id === 1) webhookUrl = this.baseConfig.discordWebhookUrl || null;
-    if (!webhookUrl) {
+    if (!webhookUrl && !snapshot.config.dryRun) {
       await this.dashboardStore.log("warn", "Aucun webhook Discord configuré — scan ignoré", user.id);
       return;
     }
 
-    const snapshot = await this.dashboardStore.runtimeSnapshot(this.baseConfig, this.fallbackSearches, user.id);
     if (snapshot.searches.length === 0) {
       await this.dashboardStore.log("info", "Aucune recherche active — scan ignoré", user.id);
       return;
     }
 
     // Override the shared snapshot's webhook with this user's
-    const userConfig: RuntimeConfig = { ...snapshot.config, discordWebhookUrl: webhookUrl };
+    const userConfig: RuntimeConfig = { ...snapshot.config, discordWebhookUrl: webhookUrl ?? "" };
     const runId = await this.dashboardStore.startScanRun(source, snapshot.searches.length, user.id);
     try {
-      const provider = createListingProvider(userConfig);
+      const provider = new CachedListingProvider(
+        createListingProvider(userConfig),
+        searchCache,
+        providerCacheNamespace(userConfig)
+      );
       const discord = new DiscordWebhook(userConfig);
       const result = await runScan({
         provider,
@@ -223,10 +241,33 @@ export class BotController {
           });
         })
         .finally(async () => {
-          const snapshot = await this.dashboardStore.runtimeSnapshot(this.baseConfig, this.fallbackSearches);
-          this.scheduleNext(snapshot.config.pollIntervalSeconds);
+          this.scheduleNext(await this.nextSchedulerDelaySeconds());
         });
     }, delayMs);
+  }
+
+  private isUserScanDue(userId: number, nowMs: number): boolean {
+    const dueAt = this.nextUserScanAt.get(userId);
+    return dueAt === undefined || dueAt <= nowMs;
+  }
+
+  private markUserScanned(userId: number, settings: UserSettings, globalIntervalSeconds: number): void {
+    this.nextUserScanAt.set(userId, Date.now() + this.effectiveUserIntervalSeconds(userId, settings, globalIntervalSeconds) * 1000);
+  }
+
+  private async nextSchedulerDelaySeconds(fallback?: number): Promise<number> {
+    const globalInterval = fallback ?? (await this.dashboardStore.runtimeSnapshot(this.baseConfig, this.fallbackSearches)).config.pollIntervalSeconds;
+    const users = await this.dashboardStore.listActiveUsers();
+    if (users.length === 0) return globalInterval;
+
+    const intervals = await Promise.all(
+      users.map(async (user) => this.effectiveUserIntervalSeconds(user.id, await this.dashboardStore.getUserSettings(user.id), globalInterval))
+    );
+    return Math.min(globalInterval, ...intervals);
+  }
+
+  private effectiveUserIntervalSeconds(userId: number, settings: UserSettings, globalIntervalSeconds: number): number {
+    return Math.max(60, userId === 1 ? globalIntervalSeconds : settings.pollIntervalSeconds);
   }
 
   private clearTimer(): void {

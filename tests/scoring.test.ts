@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { effectivePrice, resolveBenchmark, scoreListing, scoreListings } from "../src/scoring.js";
+import { effectivePrice, resolveBenchmark, scoreListing, scoreListings, type RiskRules } from "../src/scoring.js";
 import { benchmarkKey } from "../src/phoneMatcher.js";
 import type { Listing, PhoneMatch } from "../src/types.js";
 
@@ -417,6 +417,25 @@ test("dashboard max final price blocks expensive alerts", () => {
   assert.equal(deal?.rejectionReasons.some((reason) => reason.includes("supérieur au maximum dashboard")), true);
 });
 
+test("seller allowlist adds a small confidence boost and reason", () => {
+  const base = listing({
+    title: "iPhone 15 Pro Max 256Go",
+    price: 700,
+    description: "Tres bon etat, facture, debloque tout operateur",
+    sellerName: "trusted-seller",
+    sellerRating: 4.9,
+    sellerReviews: 55,
+    imageUrl: "https://example.test/image.jpg"
+  });
+  const plain = scoreListing(base, []);
+  const allowed = scoreListing(base, [], [], {
+    riskRules: riskRules({ sellerAllowlist: ["trusted-seller"] })
+  });
+
+  assert.equal(allowed?.score, Math.min(100, (plain?.score ?? 0) + 3));
+  assert.equal(allowed?.reasons.includes("vendeur autorisé"), true);
+});
+
 function makeListing(input: Partial<Listing> & { price: number }): Listing {
   const item: Listing = {
     id: input.id ?? "id",
@@ -456,4 +475,28 @@ function listing(input: Partial<Listing>): Listing {
 
 function daysAgo(days: number): string {
   return new Date(Date.now() - days * 864e5).toISOString();
+}
+
+function riskRules(overrides: Partial<RiskRules>): RiskRules {
+  return {
+    rejectHighRisks: true,
+    allowMissingImage: false,
+    rejectNonOriginalScreen: true,
+    rejectScreenReplaced: false,
+    rejectMissingInvoice: false,
+    minSellerReviews: 0,
+    minSellerRating: 0,
+    minBatteryHealth: 80,
+    allowedCountries: [],
+    customExcludeKeywords: [],
+    customExcludeSeverity: "reject" as const,
+    sellerBlocklist: [],
+    sellerAllowlist: [],
+    maxFavoriteCount: 0,
+    maxListingAgeHours: 0,
+    excludeVintedPro: false,
+    minSellerItems: 0,
+    colorAllowlist: [],
+    ...overrides
+  };
 }
