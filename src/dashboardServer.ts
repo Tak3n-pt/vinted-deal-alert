@@ -652,7 +652,8 @@ function headerValue(req: IncomingMessage, name: string): string {
 }
 
 async function internalProxyUserId(req: IncomingMessage, dashboardStore: DashboardStore): Promise<number | null> {
-  const discordId = headerValue(req, "x-bonoitec-discord-id");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const discordId = headerValue(req, "x-bonoitec-discord-id") || (url.searchParams.get("__bonoitec_discord_id") ?? "").trim();
   if (!discordId) return null;
 
   const expectedSecret = process.env.BOT_SYNC_SECRET ?? process.env.SUBSCRIPTION_SYNC_SECRET ?? "";
@@ -663,17 +664,19 @@ async function internalProxyUserId(req: IncomingMessage, dashboardStore: Dashboa
   }
   if (!/^\d{17,19}$/.test(discordId)) throw new HttpError(400, "discordId invalide");
 
-  const username = headerValue(req, "x-bonoitec-discord-username") || discordId;
-  const avatar = headerValue(req, "x-bonoitec-discord-avatar") || null;
+  const username = headerValue(req, "x-bonoitec-discord-username") || (url.searchParams.get("__bonoitec_discord_username") ?? "").trim() || discordId;
+  const avatar = headerValue(req, "x-bonoitec-discord-avatar") || (url.searchParams.get("__bonoitec_discord_avatar") ?? "").trim() || null;
   let user = await dashboardStore.getUserByDiscordId(discordId);
 
-  if ((!user || (user.plan !== "admin" && !user.betaApproved)) && headerValue(req, "x-bonoitec-access-active") === "1") {
+  const accessActive = headerValue(req, "x-bonoitec-access-active") || (url.searchParams.get("__bonoitec_access_active") ?? "").trim();
+  const accessPlan = headerValue(req, "x-bonoitec-access-plan") || (url.searchParams.get("__bonoitec_access_plan") ?? "").trim();
+  if ((!user || (user.plan !== "admin" && !user.betaApproved)) && accessActive === "1") {
     user = await dashboardStore.syncSubscriptionAccess({
       discordId,
       active: true,
       paidQuota: intFromEnv("PRO_DAILY_APIFY_QUOTA", 500),
       freeQuota: intFromEnv("FREE_DAILY_APIFY_QUOTA", 30),
-      source: `vercel proxy / ${headerValue(req, "x-bonoitec-access-plan") || "pro"}`
+      source: `vercel proxy / ${accessPlan || "pro"}`
     });
   }
 
