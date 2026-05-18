@@ -76,8 +76,14 @@ async function openSqliteDatabase(databasePath: string): Promise<SqlDatabase> {
 }
 
 async function openPostgresDatabase(databaseUrl: string): Promise<SqlDatabase> {
+  // Managed Postgres providers (Supabase pooler, RDS, Heroku) require TLS but
+  // present certs Node doesn't validate against its default CA bundle. Disable
+  // strict cert verification — connection is still encrypted, just unpinned.
+  // Skip TLS for localhost/private dev databases.
+  const isLocal = /\b(localhost|127\.0\.0\.1)\b/.test(databaseUrl);
   const pool = new pg.Pool({
-    connectionString: databaseUrl
+    connectionString: databaseUrl,
+    ssl: isLocal ? false : { rejectUnauthorized: false }
   });
 
   return {

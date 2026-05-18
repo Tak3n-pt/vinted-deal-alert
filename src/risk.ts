@@ -108,6 +108,18 @@ function batteryHealthRisks(text: string): RiskSignal[] {
   return signals;
 }
 
+export function scamFloorRisk(finalPrice: number, benchmarkPrice: number): RiskSignal | null {
+  if (benchmarkPrice <= 0) return null;
+  if (finalPrice < benchmarkPrice * 0.30) {
+    return {
+      code: "below-scam-floor",
+      label: `prix < 30% du marché (${Math.round(finalPrice)}€ vs ${Math.round(benchmarkPrice)}€)`,
+      severity: "reject"
+    };
+  }
+  return null;
+}
+
 export function riskPenalty(signals: RiskSignal[]): number {
   return signals.reduce((total, signal) => {
     if (signal.severity === "reject") return total + 100;

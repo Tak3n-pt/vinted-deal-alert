@@ -2,6 +2,7 @@ import type { Listing, RawListing, RuntimeConfig, SearchConfig } from "./types.j
 
 export interface ListingProvider {
   search(search: SearchConfig): Promise<Listing[]>;
+  fetchListingDetails?(urls: string[]): Promise<Listing[]>;
 }
 
 export class SearchResultCache {
@@ -37,6 +38,10 @@ export class CachedListingProvider implements ListingProvider {
 
   search(search: SearchConfig): Promise<Listing[]> {
     return this.cache.getOrFetch(this.namespace, search, () => this.upstream.search(search));
+  }
+
+  fetchListingDetails(urls: string[]): Promise<Listing[]> {
+    return this.upstream.fetchListingDetails?.(urls) ?? Promise.resolve([]);
   }
 }
 
@@ -147,6 +152,51 @@ export class ApifyVintedProvider {
     const payload = (await response.json()) as unknown;
     return extractRawListings(payload).map(normalizeListing).filter((item): item is Listing => item !== null);
   }
+
+  async fetchListingDetails(urls: string[]): Promise<Listing[]> {
+    if (!urls.length) return [];
+    if (!this.config.apifyToken) {
+      throw new Error("APIFY_TOKEN est requis pour la source Apify");
+    }
+    const actorId = this.config.apifyDetailActorId;
+    if (!actorId) {
+      throw new Error("APIFY_DETAIL_ACTOR_ID est requis pour la vérification de détail");
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.providerTimeoutSeconds * 1000);
+    const url = new URL(`https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items`);
+    url.searchParams.set("clean", "true");
+    url.searchParams.set("format", "json");
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.config.apifyToken}`
+        },
+        body: JSON.stringify({ urls, startUrls: urls.map((u) => ({ url: u })) }),
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(`Délai actor détail expiré après ${this.config.providerTimeoutSeconds}s`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`Actor détail en échec ${response.status} : ${body.slice(0, 300)}`);
+    }
+
+    const payload = (await response.json()) as unknown;
+    return extractRawListings(payload).map(normalizeListing).filter((item): item is Listing => item !== null);
+  }
 }
 
 export function toApifyInput(search: SearchConfig): Record<string, unknown> {
@@ -159,7 +209,10 @@ export function toApifyInput(search: SearchConfig): Record<string, unknown> {
   }
 
   return {
-    maxProducts: Math.max(10, search.limit),
+    // Honor the rotation slice exactly. Earlier code forced a 10-listing
+    // minimum which silently doubled Apify spend when an operator set
+    // MAX_PRODUCTS_PER_SCAN below 10.
+    maxProducts: Math.max(1, Math.floor(search.limit)),
     startUrls: [{ url: url.toString() }]
   };
 }

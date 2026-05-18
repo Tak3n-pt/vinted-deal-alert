@@ -2,17 +2,19 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { RuntimeConfig, SearchConfig } from "./types.js";
 
+// Broad starter pack: one query per phone family. Each returns mixed
+// generations (e.g. "iphone pro max" pulls 13/14/15/16/17 Pro Max). The
+// scoring brain handles model matching, so a new user gets alerts across
+// every premium phone the bot supports without touching the dashboard.
+// Users who want narrower coverage can disable these and add their own.
 export const DEFAULT_SEARCHES: SearchConfig[] = [
-  { market: "FR", query: "iphone 16 pro max 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "iphone 17 pro 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "iphone 17 pro max 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "samsung s25 ultra 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "samsung s26 ultra 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "samsung galaxy z fold 7 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "samsung galaxy z flip 7 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "google pixel 10 pro 128go", limit: 10, sort: "newest" },
-  { market: "FR", query: "google pixel 10 pro xl 256go", limit: 10, sort: "newest" },
-  { market: "FR", query: "google pixel 10 pro fold 256go", limit: 10, sort: "newest" }
+  { market: "FR", query: "iphone pro max", limit: 10, sort: "newest" },
+  { market: "FR", query: "iphone pro", limit: 10, sort: "newest" },
+  { market: "FR", query: "samsung galaxy ultra", limit: 10, sort: "newest" },
+  { market: "FR", query: "samsung galaxy plus", limit: 10, sort: "newest" },
+  { market: "FR", query: "samsung galaxy fold", limit: 10, sort: "newest" },
+  { market: "FR", query: "samsung galaxy flip", limit: 10, sort: "newest" },
+  { market: "FR", query: "google pixel pro", limit: 10, sort: "newest" }
 ];
 
 export function loadDotEnv(path = ".env"): void {
@@ -40,10 +42,11 @@ export function loadConfig(): RuntimeConfig {
     authorizedDataApiUrl: process.env.AUTHORIZED_DATA_API_URL ?? "",
     authorizedDataApiKey: process.env.AUTHORIZED_DATA_API_KEY ?? "",
     apifyActorId: process.env.APIFY_ACTOR_ID ?? "epicscrapers~vinted-search-scraper",
+    apifyDetailActorId: process.env.APIFY_DETAIL_ACTOR_ID ?? "anyscrap~vinted-details",
     discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL ?? "",
-    pollIntervalSeconds: intEnv("POLL_INTERVAL_SECONDS", 900),
+    pollIntervalSeconds: intEnv("POLL_INTERVAL_SECONDS", 1800),
     providerTimeoutSeconds: intEnv("PROVIDER_TIMEOUT_SECONDS", 20),
-    maxProductsPerScan: intEnv("MAX_PRODUCTS_PER_SCAN", 100),
+    maxProductsPerScan: intEnv("MAX_PRODUCTS_PER_SCAN", 30),
     heartbeatEveryScans: nonNegativeIntEnv("HEARTBEAT_EVERY_SCANS", 4),
     databasePath: process.env.DATABASE_PATH ?? "./data/deals.sqlite",
     runOnStart: boolEnv("RUN_ON_START", true),
@@ -53,16 +56,16 @@ export function loadConfig(): RuntimeConfig {
   return config;
 }
 
-export function loadSearches(maxProductsPerScan = intEnv("MAX_PRODUCTS_PER_SCAN", 100)): SearchConfig[] {
+export function loadSearches(_maxProductsPerScan = intEnv("MAX_PRODUCTS_PER_SCAN", 30)): SearchConfig[] {
   const configPath = process.env.SEARCH_CONFIG_PATH;
-  if (!configPath) return enforceSearchBudget(DEFAULT_SEARCHES, maxProductsPerScan);
+  if (!configPath) return DEFAULT_SEARCHES;
 
   const parsed = JSON.parse(readFileSync(resolve(configPath), "utf8")) as unknown;
   if (!Array.isArray(parsed)) {
     throw new Error("SEARCH_CONFIG_PATH doit pointer vers un tableau JSON de recherches");
   }
 
-  const searches = parsed.map((item) => {
+  return parsed.map((item) => {
     const search = item as Partial<SearchConfig>;
     if (!search.query && !search.url) throw new Error("Chaque recherche doit avoir une requête ou une URL");
     const normalized: SearchConfig = {
@@ -74,18 +77,6 @@ export function loadSearches(maxProductsPerScan = intEnv("MAX_PRODUCTS_PER_SCAN"
     if (search.url) normalized.url = search.url;
     return normalized;
   });
-  return enforceSearchBudget(searches, maxProductsPerScan);
-}
-
-function enforceSearchBudget(searches: SearchConfig[], maxProductsPerScan: number): SearchConfig[] {
-  const requested = searches.reduce((total, search) => total + search.limit, 0);
-  if (requested > maxProductsPerScan) {
-    throw new Error(
-      `La configuration demande ${requested} produits par scan, au-dessus de MAX_PRODUCTS_PER_SCAN=${maxProductsPerScan}. ` +
-        "Réduire les recherches ou augmenter MAX_PRODUCTS_PER_SCAN volontairement."
-    );
-  }
-  return searches;
 }
 
 function normalizeLimit(value: number | undefined): number {

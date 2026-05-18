@@ -6,7 +6,7 @@ import { normalizeCondition } from "./scoring.js";
 import { openSqlDatabase, type SqlDatabase } from "./sqlDatabase.js";
 
 export interface DealStoreApi {
-  saveObserved(listing: Listing, match: PhoneMatch): Promise<void>;
+  saveObserved(listing: Listing, match: PhoneMatch, userId?: number): Promise<void>;
   recentHistory(days?: number): Promise<HistoricalListing[]>;
   /**
    * All alert operations are scoped to a single user so two users with
@@ -20,6 +20,17 @@ export interface DealStoreApi {
   recordAlert(deal: ScoredDeal, userId?: number): Promise<void>;
   releaseAlert(deal: ScoredDeal, userId?: number): Promise<void>;
   alertsInLast24h(userId?: number): Promise<number>;
+  listingsForPriceRecheck(userId: number, count: number, freshenedHoursAgo: number, maxObservedAgeHours: number): Promise<RecheckCandidate[]>;
+  recordPriceRecheck(listingId: string, newPrice: number): Promise<void>;
+}
+
+export interface RecheckCandidate {
+  id: string;
+  benchmarkKey: string;
+  title: string;
+  url: string;
+  storedPrice: number;
+  observedAt: string;
 }
 
 export class DealStore implements DealStoreApi {
@@ -31,13 +42,13 @@ export class DealStore implements DealStoreApi {
     return store;
   }
 
-  async saveObserved(listing: Listing, match: PhoneMatch): Promise<void> {
+  async saveObserved(listing: Listing, match: PhoneMatch, userId?: number): Promise<void> {
     const conditionBucket = normalizeCondition(listing.condition ?? listing.description);
     const key = benchmarkKey(match, conditionBucket);
     await this.db.run(
       `insert into observed_listings
-        (id, benchmark_key, title, price, currency, url, listed_at, observed_at)
-       values (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        (id, benchmark_key, title, price, currency, url, listed_at, observed_at, user_id)
+       values (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
        on conflict(id) do update set
          benchmark_key = excluded.benchmark_key,
          title = excluded.title,
@@ -46,7 +57,7 @@ export class DealStore implements DealStoreApi {
          url = excluded.url,
          listed_at = excluded.listed_at,
          observed_at = CURRENT_TIMESTAMP`,
-      [listing.id, key, listing.title, effectivePrice(listing), listing.currency, listing.url, listing.listedAt ?? null]
+      [listing.id, key, listing.title, effectivePrice(listing), listing.currency, listing.url, listing.listedAt ?? null, userId ?? null]
     );
   }
 
@@ -152,6 +163,62 @@ export class DealStore implements DealStoreApi {
     );
   }
 
+  async listingsForPriceRecheck(
+    userId: number,
+    count: number,
+    freshenedHoursAgo: number,
+    maxObservedAgeHours: number
+  ): Promise<RecheckCandidate[]> {
+    const limit = Math.max(1, Math.floor(count));
+    const isPg = this.db.dialect === "postgres";
+    const sql = isPg
+      ? `select ol.id, ol.benchmark_key, ol.title, ol.url, ol.price, ol.observed_at
+         from observed_listings ol
+         where (ol.user_id = ? or ol.user_id is null)
+           and ol.observed_at >= CURRENT_TIMESTAMP - (?::int * interval '1 hour')
+           and (ol.last_checked_at is null or ol.last_checked_at <= CURRENT_TIMESTAMP - (?::int * interval '1 hour'))
+           and not exists (
+             select 1 from sent_alerts sa
+             where sa.listing_id = ol.id and sa.user_id = ? and sa.status = 'sent'
+           )
+         order by random() limit ?`
+      : `select ol.id, ol.benchmark_key, ol.title, ol.url, ol.price, ol.observed_at
+         from observed_listings ol
+         where (ol.user_id = ? or ol.user_id is null)
+           and ol.observed_at >= datetime('now', ?)
+           and (ol.last_checked_at is null or ol.last_checked_at <= datetime('now', ?))
+           and not exists (
+             select 1 from sent_alerts sa
+             where sa.listing_id = ol.id and sa.user_id = ? and sa.status = 'sent'
+           )
+         order by random() limit ?`;
+    const args = isPg
+      ? [userId, maxObservedAgeHours, freshenedHoursAgo, userId, limit]
+      : [userId, `-${maxObservedAgeHours} hours`, `-${freshenedHoursAgo} hours`, userId, limit];
+    const rows = await this.db.all(sql, args);
+    return rows.map((row) => ({
+      id: String(row.id),
+      benchmarkKey: String(row.benchmark_key),
+      title: String(row.title),
+      url: String(row.url),
+      storedPrice: Number(row.price),
+      observedAt: String(row.observed_at)
+    }));
+  }
+
+  async recordPriceRecheck(listingId: string, newPrice: number): Promise<void> {
+    // Bump `last_checked_at` so the recheck rotation skips this listing for
+    // the cooldown window. Intentionally NOT touching `observed_at` — that
+    // would refresh the listing's age, keeping stale items in the recheck
+    // pool forever.
+    await this.db.run(
+      `update observed_listings
+       set price = ?, last_checked_at = CURRENT_TIMESTAMP
+       where id = ?`,
+      [newPrice, listingId]
+    );
+  }
+
   async close(): Promise<void> {
     await this.db.close();
   }
@@ -170,8 +237,17 @@ export class DealStore implements DealStoreApi {
           observed_at timestamptz not null
         );
 
+        alter table observed_listings add column if not exists last_checked_at timestamptz;
+        alter table observed_listings add column if not exists user_id integer;
+
         create index if not exists idx_observed_benchmark
           on observed_listings (benchmark_key, observed_at);
+
+        create index if not exists idx_observed_last_checked
+          on observed_listings (last_checked_at);
+
+        create index if not exists idx_observed_user
+          on observed_listings (user_id, observed_at);
 
         create table if not exists sent_alerts (
           listing_id text primary key,
@@ -212,6 +288,14 @@ export class DealStore implements DealStoreApi {
         sent_at text not null
       );
     `);
+    try {
+      await this.db.exec(`alter table observed_listings add column last_checked_at text`);
+    } catch (_e) {
+      // SQLite: column already exists
+    }
+    await this.db.exec(`create index if not exists idx_observed_last_checked on observed_listings (last_checked_at)`);
+    await this.addColumnIfMissing("observed_listings", "user_id", "integer");
+    await this.db.exec(`create index if not exists idx_observed_user on observed_listings (user_id, observed_at)`);
     await this.addColumnIfMissing("sent_alerts", "status", "text not null default 'sent'");
     await this.addColumnIfMissing("sent_alerts", "reserved_at", "text");
     await this.applyMultiTenantAlerts();

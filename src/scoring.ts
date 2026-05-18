@@ -1,6 +1,6 @@
 import type { Listing, PhoneMatch, RiskSignal, ScoredDeal } from "./types.js";
 import { benchmarkKey, matchPhone } from "./phoneMatcher.js";
-import { findRiskSignals, riskPenalty } from "./risk.js";
+import { findRiskSignals, riskPenalty, scamFloorRisk } from "./risk.js";
 
 export interface HistoricalListing {
   benchmarkKey: string;
@@ -64,46 +64,47 @@ export interface ScoringOptions {
   riskRules?: RiskRules;
 }
 
+// Calibrated 2026-05-16. Refresh quarterly (next: 2026-08-15).
 const FALLBACK_MARKET_PRICES: Record<string, number> = {
-  "iPhone 13 Pro|128": 390,
-  "iPhone 13 Pro Max|128": 470,
-  "iPhone 14 Pro|128": 560,
-  "iPhone 14 Pro Max|128": 650,
-  "iPhone 15 Pro|128": 720,
-  "iPhone 15 Pro Max|256": 890,
-  "iPhone 16 Pro|128": 900,
-  "iPhone 16 Pro Max|256": 1080,
-  "iPhone 17 Pro|256": 1080,
-  "iPhone 17 Pro Max|256": 1280,
-  "Samsung Galaxy S22 Plus|128": 300,
-  "Samsung Galaxy S23 Plus|256": 430,
-  "Samsung Galaxy S24 Plus|256": 570,
-  "Samsung Galaxy S25 Plus|256": 720,
-  "Samsung Galaxy S26 Plus|256": 880,
-  "Samsung Galaxy S22 Ultra|128": 360,
-  "Samsung Galaxy S23 Ultra|256": 560,
-  "Samsung Galaxy S24 Ultra|256": 750,
-  "Samsung Galaxy S25 Ultra|256": 920,
-  "Samsung Galaxy S26 Ultra|256": 1100,
-  "Samsung Galaxy Z Fold 4|256": 520,
-  "Samsung Galaxy Z Fold 5|256": 720,
-  "Samsung Galaxy Z Fold 6|256": 980,
-  "Samsung Galaxy Z Fold 7|256": 1180,
-  "Samsung Galaxy Z Flip 4|128": 300,
-  "Samsung Galaxy Z Flip 5|256": 470,
-  "Samsung Galaxy Z Flip 6|256": 620,
-  "Samsung Galaxy Z Flip 7|256": 730,
-  "Google Pixel 9 Pro|128": 560,
-  "Google Pixel 9 Pro XL|128": 650,
-  "Google Pixel 9 Pro Fold|256": 950,
-  "Google Pixel 10 Pro|128": 730,
-  "Google Pixel 10 Pro XL|256": 850,
-  "Google Pixel 10 Pro Fold|256": 1150
+  "iPhone 13 Pro|128": 340,
+  "iPhone 13 Pro Max|128": 410,
+  "iPhone 14 Pro|128": 490,
+  "iPhone 14 Pro Max|128": 570,
+  "iPhone 15 Pro|128": 630,
+  "iPhone 15 Pro Max|256": 780,
+  "iPhone 16 Pro|128": 790,
+  "iPhone 16 Pro Max|256": 950,
+  "iPhone 17 Pro|256": 950,
+  "iPhone 17 Pro Max|256": 1120,
+  "Samsung Galaxy S22 Plus|128": 260,
+  "Samsung Galaxy S23 Plus|256": 380,
+  "Samsung Galaxy S24 Plus|256": 500,
+  "Samsung Galaxy S25 Plus|256": 630,
+  "Samsung Galaxy S26 Plus|256": 770,
+  "Samsung Galaxy S22 Ultra|128": 320,
+  "Samsung Galaxy S23 Ultra|256": 490,
+  "Samsung Galaxy S24 Ultra|256": 660,
+  "Samsung Galaxy S25 Ultra|256": 810,
+  "Samsung Galaxy S26 Ultra|256": 970,
+  "Samsung Galaxy Z Fold 4|256": 460,
+  "Samsung Galaxy Z Fold 5|256": 630,
+  "Samsung Galaxy Z Fold 6|256": 860,
+  "Samsung Galaxy Z Fold 7|256": 1040,
+  "Samsung Galaxy Z Flip 4|128": 260,
+  "Samsung Galaxy Z Flip 5|256": 410,
+  "Samsung Galaxy Z Flip 6|256": 540,
+  "Samsung Galaxy Z Flip 7|256": 640,
+  "Google Pixel 9 Pro|128": 490,
+  "Google Pixel 9 Pro XL|128": 570,
+  "Google Pixel 9 Pro Fold|256": 830,
+  "Google Pixel 10 Pro|128": 640,
+  "Google Pixel 10 Pro XL|256": 750,
+  "Google Pixel 10 Pro Fold|256": 1010
 };
 
-const MIN_ALERT_SCORE = 82;
-const MIN_ALERT_DISCOUNT = 0.22;
-const MIN_ALERT_SAVINGS = 80;
+const MIN_ALERT_SCORE = 60;
+const MIN_ALERT_DISCOUNT = 0.15;
+const MIN_ALERT_SAVINGS = 60;
 
 export function scoreListings(listings: Listing[], history: HistoricalListing[], options: ScoringOptions = {}): ScoredDeal[] {
   const scanRisks = scanRiskMap(listings);
@@ -129,7 +130,14 @@ export function scoreListing(
 
   const finalPrice = effectivePrice(listing);
   const dashboardRisks = dashboardRiskSignals(listing, options.riskRules);
-  const baseRisks = [...findRiskSignals(listing), ...modelPriceRisks(finalPrice, match), ...extraRisks, ...dashboardRisks];
+  const scamRisk = scamFloorRisk(finalPrice, benchmarkPrice);
+  const baseRisks = [
+    ...findRiskSignals(listing),
+    ...modelPriceRisks(finalPrice, match),
+    ...extraRisks,
+    ...dashboardRisks,
+    ...(scamRisk ? [scamRisk] : [])
+  ];
   const savings = Math.max(0, benchmarkPrice - finalPrice);
   const discountPercent = savings / benchmarkPrice;
   const risks = [...baseRisks, ...sellerRiskSignals(listing, discountPercent)];
@@ -137,8 +145,8 @@ export function scoreListing(
   const sellerScore = sellerConfidence(listing);
   const freshnessScore = freshness(listing);
   const allowlistScore = isSellerAllowlisted(listing, options.riskRules) ? 3 : 0;
-  const discountScore = Math.min(45, discountPercent * 140);
-  const savingsScore = Math.min(20, savings / 8);
+  const discountScore = Math.min(35, discountPercent * 100);
+  const savingsScore = Math.min(40, savings / 5);
   const matchScore = match.confidence * 15;
   const score = clamp(Math.round(discountScore + savingsScore + sellerScore + freshnessScore + matchScore + allowlistScore - penalty), 0, 100);
 
@@ -286,26 +294,18 @@ function alertThreshold(match: PhoneMatch, options: ScoringOptions, modelRule: M
   };
 
   if (match.brand === "samsung") {
-    threshold.minDiscount = 0.24;
-    threshold.minSavings = 90;
+    threshold.minDiscount = 0.18;
+    threshold.minSavings = 70;
   }
 
   if (match.brand === "google") {
-    threshold.minDiscount = 0.23;
-    threshold.minSavings = 85;
+    threshold.minDiscount = 0.17;
+    threshold.minSavings = 65;
   }
 
   if (match.tier === "fold") {
-    threshold.minScore = 84;
-    threshold.minSavings = 120;
-  }
-
-  if ((match.brand === "apple" && match.generation >= 16) || match.model.includes("S25") || match.model.includes("S26")) {
-    threshold.minSavings = 120;
-  }
-
-  if (match.brand === "google" && match.generation >= 10) {
-    threshold.minSavings = 120;
+    threshold.minScore = 65;
+    threshold.minSavings = 90;
   }
 
   if (options.minScore !== undefined) threshold.minScore = options.minScore;
@@ -397,8 +397,8 @@ function dashboardRiskSignals(listing: Listing, rules: RiskRules | undefined): R
     });
   }
 
-  const rating = listing.sellerRating ?? 0;
-  if (rules.minSellerRating > 0 && rating < rules.minSellerRating) {
+  const rating = listing.sellerRating;
+  if (rules.minSellerRating > 0 && rating !== undefined && rating < rules.minSellerRating) {
     signals.push({
       code: "dashboard-min-seller-rating",
       label: `note vendeur sous ${rules.minSellerRating}`,
@@ -635,42 +635,48 @@ function extractBatteryHealth(text: string): number | undefined {
   return undefined;
 }
 
+/**
+ * "Below this final price is almost certainly a scam or wrong-model listing."
+ * Calibrated to ~60% of the refreshed FALLBACK_MARKET_PRICES so a legitimate
+ * 15–25% discount still passes; combined with the 30% scam-floor risk this
+ * gives two layers of cheap-price defense without blocking real deals.
+ */
 function modelPriceFloor(match: PhoneMatch): number | undefined {
   const floors: Record<string, number> = {
-    "iPhone 13 Pro": 260,
-    "iPhone 13 Pro Max": 320,
-    "iPhone 14 Pro": 380,
-    "iPhone 14 Pro Max": 450,
-    "iPhone 15 Pro": 450,
-    "iPhone 15 Pro Max": 550,
-    "iPhone 16 Pro": 600,
-    "iPhone 16 Pro Max": 750,
-    "iPhone 17 Pro": 750,
-    "iPhone 17 Pro Max": 900,
-    "Samsung Galaxy S22 Plus": 220,
-    "Samsung Galaxy S23 Plus": 300,
-    "Samsung Galaxy S24 Plus": 390,
-    "Samsung Galaxy S25 Plus": 500,
-    "Samsung Galaxy S26 Plus": 650,
-    "Samsung Galaxy S22 Ultra": 260,
-    "Samsung Galaxy S23 Ultra": 380,
-    "Samsung Galaxy S24 Ultra": 450,
-    "Samsung Galaxy S25 Ultra": 650,
-    "Samsung Galaxy S26 Ultra": 800,
-    "Samsung Galaxy Z Fold 4": 350,
-    "Samsung Galaxy Z Fold 5": 500,
-    "Samsung Galaxy Z Fold 6": 650,
-    "Samsung Galaxy Z Fold 7": 780,
-    "Samsung Galaxy Z Flip 4": 220,
-    "Samsung Galaxy Z Flip 5": 320,
-    "Samsung Galaxy Z Flip 6": 380,
-    "Samsung Galaxy Z Flip 7": 450,
-    "Google Pixel 9 Pro": 380,
-    "Google Pixel 9 Pro XL": 450,
-    "Google Pixel 9 Pro Fold": 600,
-    "Google Pixel 10 Pro": 500,
-    "Google Pixel 10 Pro XL": 620,
-    "Google Pixel 10 Pro Fold": 750
+    "iPhone 13 Pro": 200,
+    "iPhone 13 Pro Max": 240,
+    "iPhone 14 Pro": 290,
+    "iPhone 14 Pro Max": 340,
+    "iPhone 15 Pro": 380,
+    "iPhone 15 Pro Max": 460,
+    "iPhone 16 Pro": 470,
+    "iPhone 16 Pro Max": 570,
+    "iPhone 17 Pro": 570,
+    "iPhone 17 Pro Max": 670,
+    "Samsung Galaxy S22 Plus": 160,
+    "Samsung Galaxy S23 Plus": 230,
+    "Samsung Galaxy S24 Plus": 300,
+    "Samsung Galaxy S25 Plus": 380,
+    "Samsung Galaxy S26 Plus": 460,
+    "Samsung Galaxy S22 Ultra": 190,
+    "Samsung Galaxy S23 Ultra": 290,
+    "Samsung Galaxy S24 Ultra": 400,
+    "Samsung Galaxy S25 Ultra": 490,
+    "Samsung Galaxy S26 Ultra": 580,
+    "Samsung Galaxy Z Fold 4": 280,
+    "Samsung Galaxy Z Fold 5": 380,
+    "Samsung Galaxy Z Fold 6": 520,
+    "Samsung Galaxy Z Fold 7": 620,
+    "Samsung Galaxy Z Flip 4": 160,
+    "Samsung Galaxy Z Flip 5": 250,
+    "Samsung Galaxy Z Flip 6": 320,
+    "Samsung Galaxy Z Flip 7": 380,
+    "Google Pixel 9 Pro": 290,
+    "Google Pixel 9 Pro XL": 340,
+    "Google Pixel 9 Pro Fold": 500,
+    "Google Pixel 10 Pro": 380,
+    "Google Pixel 10 Pro XL": 450,
+    "Google Pixel 10 Pro Fold": 600
   };
   return floors[match.model];
 }
@@ -748,10 +754,13 @@ function sellerKey(listing: Listing): string {
 }
 
 function freshness(listing: Listing): number {
-  if (!listing.listedAt) return 4;
+  // Missing or unparseable listedAt → 0 points (don't reward unknown age).
+  if (!listing.listedAt) return 0;
   const timestamp = Date.parse(listing.listedAt);
-  if (!Number.isFinite(timestamp)) return 4;
-  const hours = (Date.now() - timestamp) / 36e5;
+  if (!Number.isFinite(timestamp)) return 0;
+  // Clock-skew defense: a listedAt slightly in the future shouldn't get the
+  // max freshness bonus. Clamp negative hours to 0 (= "fresh now").
+  const hours = Math.max(0, (Date.now() - timestamp) / 36e5);
   if (hours <= 2) return 7;
   if (hours <= 12) return 5;
   if (hours <= 48) return 3;

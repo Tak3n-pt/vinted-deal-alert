@@ -99,7 +99,10 @@ test("builds Apify actor input from a search config", () => {
   });
 });
 
-test("builds Apify actor input from a filtered Vinted URL", () => {
+test("builds Apify actor input from a filtered Vinted URL — small limits honored exactly", () => {
+  // The actor now receives the search limit verbatim. Previously a Math.max(10, …)
+  // floor would silently inflate maxProducts when an operator set a small
+  // limit, doubling Apify spend for misconfigured scans.
   assert.deepEqual(toApifyInput({
     market: "FR",
     query: "iphone 15 pro 256go",
@@ -107,7 +110,7 @@ test("builds Apify actor input from a filtered Vinted URL", () => {
     limit: 5,
     sort: "newest"
   }), {
-    maxProducts: 10,
+    maxProducts: 5,
     startUrls: [{ url: "https://www.vinted.fr/catalog?search_text=iphone%2015%20pro%20256go&order=newest_first" }]
   });
 });
@@ -230,6 +233,7 @@ function config(overrides: Partial<RuntimeConfig> = {}): RuntimeConfig {
     authorizedDataApiUrl: "https://provider.example.test/search",
     authorizedDataApiKey: "test-key",
     apifyActorId: "epicscrapers~vinted-search-scraper",
+    apifyDetailActorId: "anyscrap~vinted-details",
     discordWebhookUrl: "https://discord.example.test/webhook",
     pollIntervalSeconds: 300,
     providerTimeoutSeconds: 20,

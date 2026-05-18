@@ -122,6 +122,7 @@ export interface RuntimeConfig {
   authorizedDataApiKey: string;
   apifyToken?: string;
   apifyActorId: string;
+  apifyDetailActorId: string;
   discordWebhookUrl: string;
   pollIntervalSeconds: number;
   providerTimeoutSeconds: number;

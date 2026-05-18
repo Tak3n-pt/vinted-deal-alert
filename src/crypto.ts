@@ -74,7 +74,9 @@ export function decryptString(blob: string): string {
 export function validateDiscordWebhookUrl(value: unknown): string {
   if (typeof value !== "string") throw new Error("URL doit être une chaîne");
   const trimmed = value.trim();
-  if (!/^https:\/\/(?:discord(?:app)?\.com|ptb\.discord\.com|canary\.discord\.com)\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+\/?$/.test(trimmed)) {
+  // Discord deprecated the discordapp.com domain — only accept the modern
+  // discord.com hostnames (incl. ptb/canary staging environments).
+  if (!/^https:\/\/(?:discord\.com|ptb\.discord\.com|canary\.discord\.com)\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+\/?$/.test(trimmed)) {
     throw new Error("URL de webhook Discord invalide (doit commencer par https://discord.com/api/webhooks/…)");
   }
   return trimmed;

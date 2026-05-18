@@ -88,10 +88,29 @@ function delivery(overrides: Partial<AlertDeliveryOptions>): AlertDeliveryOption
   };
 }
 
+/**
+ * Build a Date that renders as `HH:MM` in Europe/Paris on a fixed reference
+ * day. `isInQuietHours` reads the clock in Paris time (the user base's local
+ * day), so test fixtures must produce Paris-anchored moments — anchoring via
+ * server-local hours would couple the tests to the CI runner's timezone.
+ */
 function at(hhmm: string): Date {
   const [h = "0", m = "0"] = hhmm.split(":");
-  const date = new Date(2026, 4, 10, Number(h), Number(m));
-  return date;
+  const hour = Number(h);
+  const minute = Number(m);
+  const baseUtc = new Date(Date.UTC(2026, 4, 10, hour, minute));
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Europe/Paris",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(baseUtc);
+  const parisHour = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+  const parisMinute = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+  const targetMinutes = hour * 60 + minute;
+  const observedMinutes = parisHour * 60 + parisMinute;
+  const shiftMinutes = targetMinutes - observedMinutes;
+  return new Date(baseUtc.getTime() + shiftMinutes * 60 * 1000);
 }
 
 interface RunScanHarness {

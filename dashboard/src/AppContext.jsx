@@ -23,6 +23,8 @@ export function AppProvider({ children }) {
   const [deals, setDeals] = useState([]);
   const [scans, setScans] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [usage, setUsage] = useState(null);
+  const [apifyUsage, setApifyUsage] = useState(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -42,7 +44,7 @@ export function AppProvider({ children }) {
     setLoading(true);
     setError("");
     try {
-      const [statusData, settingsData, userSettingsData, searchesData, modelRulesData, riskRulesData, dealsData, scansData, logsData] =
+      const [statusData, settingsData, userSettingsData, searchesData, modelRulesData, riskRulesData, dealsData, scansData, logsData, usageData, apifyUsageData] =
         await Promise.all([
           api("/api/status"),
           api("/api/settings"),
@@ -52,7 +54,13 @@ export function AppProvider({ children }) {
           api("/api/risk-rules"),
           api("/api/deals?limit=160"),
           api("/api/scans?limit=50"),
-          api("/api/logs?limit=100")
+          api("/api/logs?limit=100"),
+          api("/api/usage"),
+          currentUser?.id === 1
+            ? api("/api/admin/apify-usage").catch((err) => ({
+                apifyUsage: { configured: false, totalUsageUsd: 0, paidActorUsd: 0, datasetReads: 0, cycleStart: null, cycleEnd: null, actors: [], error: messageFromError(err) }
+              }))
+            : Promise.resolve({ apifyUsage: null })
         ]);
       setStatus(statusData.status);
       setSettings(settingsData.settings);
@@ -63,25 +71,29 @@ export function AppProvider({ children }) {
       setDeals(dealsData.deals);
       setScans(scansData.scans);
       setLogs(logsData.logs);
+      setUsage(usageData);
+      setApifyUsage(apifyUsageData.apifyUsage);
     } catch (err) {
       setError(messageFromError(err));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentUser?.id]);
 
   const refreshLive = useCallback(async () => {
     try {
-      const [statusData, dealsData, scansData, logsData] = await Promise.all([
+      const [statusData, dealsData, scansData, logsData, usageData] = await Promise.all([
         api("/api/status"),
         api("/api/deals?limit=160"),
         api("/api/scans?limit=50"),
-        api("/api/logs?limit=100")
+        api("/api/logs?limit=100"),
+        api("/api/usage")
       ]);
       setStatus(statusData.status);
       setDeals(dealsData.deals);
       setScans(scansData.scans);
       setLogs(logsData.logs);
+      setUsage(usageData);
     } catch {
       // A subsequent manual action will surface the error if the server stays down.
     }
@@ -148,6 +160,8 @@ export function AppProvider({ children }) {
     deals,
     scans,
     logs,
+    usage,
+    apifyUsage,
     loading,
     error,
     setError,

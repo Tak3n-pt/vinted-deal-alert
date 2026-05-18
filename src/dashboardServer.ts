@@ -5,10 +5,10 @@ import { extname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig, loadSearches } from "./config.js";
 import { DealStore } from "./store.js";
-import { DashboardStore } from "./dashboardStore.js";
+import { DashboardStore, nextParisMidnightUtcIso } from "./dashboardStore.js";
 import { BotController, type BotStatus } from "./botController.js";
 import type { RuntimeConfig, SearchConfig } from "./types.js";
-import type { DashboardSettingsInput, ModelRule } from "./dashboardTypes.js";
+import type { ApifyActorUsageView, ApifyUsageView, DashboardSettingsInput, ModelRule, UsageView } from "./dashboardTypes.js";
 import {
   buildAuthorizeUrl,
   exchangeCodeForToken,
@@ -35,7 +35,7 @@ export interface DashboardHandlerOptions {
 }
 
 export interface DashboardControllerApi {
-  status(): Promise<BotStatus> | BotStatus;
+  status(userId?: number): Promise<BotStatus> | BotStatus;
   scanNow(): Promise<unknown>;
   pause(): Promise<BotStatus> | BotStatus;
   resume(): Promise<BotStatus> | BotStatus;
@@ -124,6 +124,11 @@ async function handleRequest(
   writeAttempts: Map<string, { count: number; resetAt: number }>
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
+  if (req.method === "GET" && url.pathname === "/healthz") {
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   if (url.pathname.startsWith("/api/")) {
     await handleApi(req, res, url, options, loginAttempts, writeAttempts);
     return;
@@ -246,35 +251,6 @@ async function handleApi(
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/public/dashboard") {
-    const userId = 1;
-    const [status, deals, scans, logs, searches] = await Promise.all([
-      controller.status(),
-      dashboardStore.listDealCandidates(limitFromUrl(url, 100), userId),
-      dashboardStore.listScanRuns(limitFromUrl(url, 100), userId),
-      dashboardStore.listLogs(limitFromUrl(url, 100), userId),
-      dashboardStore.listSearches(userId)
-    ]);
-    const activeSearches = searches.filter((search) => search.enabled);
-    sendJson(res, 200, {
-      generatedAt: new Date().toISOString(),
-      status,
-      deals,
-      scans,
-      logs,
-      activeSearchCount: activeSearches.length,
-      searchesTotal: searches.length,
-      searches: activeSearches.map((search) => ({
-        id: search.id,
-        enabled: search.enabled,
-        market: search.market,
-        limit: search.limit,
-        sort: search.sort
-      }))
-    });
-    return;
-  }
-
   if (req.method === "GET" && url.pathname === "/healthz") {
     sendJson(res, 200, { ok: true });
     return;
@@ -295,16 +271,32 @@ async function handleApi(
       currentPeriodEnd?: number | null;
       eventType?: string | null;
       subscriptionId?: string | null;
+      /** Stripe event.id for idempotency. */
+      eventId?: string | null;
+      /** True when this is a payment_failed event — keep access, log warning. */
+      paymentFailed?: boolean;
+      /** Stripe customer id to persist (powers Customer Portal). */
+      stripeCustomerId?: string | null;
     }>(req);
     if (!body.discordId || !/^\d{17,19}$/.test(body.discordId)) throw new HttpError(400, "discordId invalide");
     if (typeof body.active !== "boolean") throw new HttpError(400, "active doit être un booléen");
+
+    // currentPeriodEnd arrives as a Unix-seconds timestamp from Stripe; persist
+    // as ISO so the dashboard can render `new Date(periodEnd)` directly.
+    const periodEndIso = typeof body.currentPeriodEnd === "number" && Number.isFinite(body.currentPeriodEnd)
+      ? new Date(body.currentPeriodEnd * 1000).toISOString()
+      : null;
 
     const user = await dashboardStore.syncSubscriptionAccess({
       discordId: body.discordId,
       active: body.active,
       paidQuota: intFromEnv("PRO_DAILY_APIFY_QUOTA", 500),
       freeQuota: intFromEnv("FREE_DAILY_APIFY_QUOTA", 30),
-      source: [body.eventType, body.plan].filter(Boolean).join(" / ")
+      source: [body.eventType, body.plan].filter(Boolean).join(" / "),
+      eventId: body.eventId ?? null,
+      paymentFailed: Boolean(body.paymentFailed),
+      stripeCustomerId: body.stripeCustomerId ?? null,
+      currentPeriodEnd: periodEndIso
     });
     sendJson(res, 200, {
       ok: true,
@@ -313,7 +305,8 @@ async function handleApi(
         discordId: user.discordId,
         plan: user.plan,
         dailyApifyQuota: user.dailyApifyQuota,
-        betaApproved: user.betaApproved
+        betaApproved: user.betaApproved,
+        currentPeriodEnd: user.currentPeriodEnd
       }
     });
     return;
@@ -340,9 +333,34 @@ async function handleApi(
             discordId: user.discordId,
             plan: user.plan,
             betaApproved: user.betaApproved,
-            dailyApifyQuota: user.dailyApifyQuota
+            dailyApifyQuota: user.dailyApifyQuota,
+            currentPeriodEnd: user.currentPeriodEnd,
+            stripeCustomerId: user.stripeCustomerId
           }
         : null
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/internal/customer-id") {
+    const expectedSecret = process.env.BOT_SYNC_SECRET ?? process.env.SUBSCRIPTION_SYNC_SECRET ?? "";
+    if (!expectedSecret) throw new HttpError(503, "Customer-id secret not configured");
+    const providedSecret = syncSecret(req);
+    if (!providedSecret || !safeSecretEquals(providedSecret, expectedSecret)) {
+      throw new HttpError(401, "Invalid customer-id secret");
+    }
+    const body = await readJson<{ discordId?: string }>(req);
+    if (!body.discordId || !/^\d{17,19}$/.test(body.discordId)) throw new HttpError(400, "discordId invalide");
+
+    const user = await dashboardStore.getUserByDiscordId(body.discordId);
+    if (!user) {
+      sendJson(res, 404, { error: "Utilisateur introuvable" });
+      return;
+    }
+    sendJson(res, 200, {
+      ok: true,
+      stripeCustomerId: user.stripeCustomerId,
+      discordId: user.discordId
     });
     return;
   }
@@ -356,7 +374,10 @@ async function handleApi(
   }
   const sessionUser = await dashboardStore.getUserById(userId);
   if (!sessionUser) throw new HttpError(401, "Utilisateur introuvable");
-  const isAdmin = sessionUser.plan === "admin";
+  // Admin privileges are tied to the seed admin row (id=1), not the billing
+  // plan. The owner can be demoted to plan="pro" for billing/quota purposes
+  // while still keeping access to global-settings routes via user.id===1.
+  const isAdmin = sessionUser.id === 1;
   const requireAdmin = () => {
     if (!isAdmin) throw new HttpError(403, "Réservé à l'administrateur");
   };
@@ -378,14 +399,43 @@ async function handleApi(
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/public/dashboard") {
+    const uid = sessionUser.id;
+    const [status, deals, scans, logs, searches] = await Promise.all([
+      controller.status(uid),
+      dashboardStore.listDealCandidates(limitFromUrl(url, 100), uid),
+      dashboardStore.listScanRuns(limitFromUrl(url, 100), uid),
+      dashboardStore.listLogs(limitFromUrl(url, 100), uid),
+      dashboardStore.listSearches(uid)
+    ]);
+    const activeSearches = searches.filter((search) => search.enabled);
+    sendJson(res, 200, {
+      generatedAt: new Date().toISOString(),
+      status,
+      deals,
+      scans,
+      logs,
+      activeSearchCount: activeSearches.length,
+      searchesTotal: searches.length,
+      searches: activeSearches.map((search) => ({
+        id: search.id,
+        enabled: search.enabled,
+        market: search.market,
+        limit: search.limit,
+        sort: search.sort
+      }))
+    });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/status") {
-    sendJson(res, 200, { status: await controller.status() });
+    sendJson(res, 200, { status: await controller.status(sessionUser.id) });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/bot/scan-now") {
     requireAdmin();
     const scan = await controller.scanNow();
-    sendJson(res, 200, { status: await controller.status(), scan });
+    sendJson(res, 200, { status: await controller.status(sessionUser.id), scan });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/bot/pause") {
@@ -401,6 +451,26 @@ async function handleApi(
 
   if (req.method === "GET" && url.pathname === "/api/settings") {
     sendJson(res, 200, { settings: await dashboardStore.settingsView(baseConfig) });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/usage") {
+    const used = await dashboardStore.getDailyUsage(userId);
+    const usage: UsageView = {
+      used,
+      total: sessionUser.dailyApifyQuota,
+      remaining: Math.max(0, sessionUser.dailyApifyQuota - used),
+      plan: sessionUser.plan,
+      // Quota resets at 00:00 Europe/Paris (matches the user base's local
+      // day). Returned as a UTC ISO so the dashboard can render it locally.
+      resetAt: nextParisMidnightUtcIso()
+    };
+    sendJson(res, 200, usage);
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/admin/apify-usage") {
+    requireAdmin();
+    const snapshot = await dashboardStore.runtimeSnapshot(baseConfig, fallbackSearches, sessionUser.id);
+    sendJson(res, 200, { apifyUsage: await fetchApifyUsage(snapshot.config) });
     return;
   }
   if (req.method === "PUT" && url.pathname === "/api/settings") {
@@ -431,6 +501,12 @@ async function handleApi(
       });
       return;
     }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/searches/disable-defaults") {
+    const disabled = await dashboardStore.disableDefaultSearches(userId);
+    sendJson(res, 200, { disabled, searches: await dashboardStore.listSearches(userId) });
+    return;
   }
 
   const searchId = routeId(url.pathname, "/api/searches/");
@@ -771,6 +847,105 @@ function mimeType(filePath: string): string {
 function cacheHeader(filePath: string): string {
   if (filePath.endsWith("bot-data.js")) return "no-cache";
   return filePath.includes("/assets/") || filePath.includes("\\assets\\") ? "public, max-age=31536000, immutable" : "no-cache";
+}
+
+async function fetchApifyUsage(config: RuntimeConfig): Promise<ApifyUsageView> {
+  const token = config.apifyToken?.trim();
+  if (!token) {
+    return {
+      configured: false,
+      totalUsageUsd: 0,
+      paidActorUsd: 0,
+      datasetReads: 0,
+      cycleStart: null,
+      cycleEnd: null,
+      actors: [],
+      error: "APIFY_TOKEN non configuré"
+    };
+  }
+
+  const headers = { authorization: `Bearer ${token}` };
+  try {
+    const payload = asRecord(await fetchJsonWithTimeout("https://api.apify.com/v2/users/me/usage/monthly", headers));
+    const data = asRecord(payload.data);
+    const serviceUsage = asRecord(data.monthlyServiceUsage);
+    const paidActor = asRecord(serviceUsage.PAID_ACTORS_PER_EVENT);
+    const datasetReads = asRecord(serviceUsage.DATASET_READS);
+    const usageCycle = asRecord(data.usageCycle);
+    const actors = await Promise.all(
+      [config.apifyActorId, config.apifyDetailActorId]
+        .filter((actorId, index, all) => actorId && all.indexOf(actorId) === index)
+        .map((actorId) => fetchApifyActorUsage(actorId, headers))
+    );
+
+    return {
+      configured: true,
+      totalUsageUsd: numberFromUnknown(data.totalUsageCreditsUsdAfterVolumeDiscount ?? data.totalUsageCreditsUsdBeforeVolumeDiscount),
+      paidActorUsd: numberFromUnknown(paidActor.amountAfterVolumeDiscountUsd ?? paidActor.baseAmountUsd),
+      datasetReads: numberFromUnknown(datasetReads.quantity),
+      cycleStart: stringOrNull(usageCycle.startAt),
+      cycleEnd: stringOrNull(usageCycle.endAt),
+      actors,
+      error: null
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      totalUsageUsd: 0,
+      paidActorUsd: 0,
+      datasetReads: 0,
+      cycleStart: null,
+      cycleEnd: null,
+      actors: [],
+      error: messageFromError(error)
+    };
+  }
+}
+
+async function fetchApifyActorUsage(actorId: string, headers: Record<string, string>): Promise<ApifyActorUsageView> {
+  const url = `https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/runs?limit=100&desc=true`;
+  const payload = asRecord(await fetchJsonWithTimeout(url, headers));
+  const data = asRecord(payload.data);
+  const items = Array.isArray(data.items) ? data.items.map(asRecord) : [];
+  const latest = items[0];
+  return {
+    actorId,
+    recentRunCount: items.length,
+    recentUsageUsd: roundMoney(items.reduce((sum, item) => sum + numberFromUnknown(item.usageTotalUsd), 0)),
+    latestRunAt: latest ? stringOrNull(latest.startedAt) : null
+  };
+}
+
+async function fetchJsonWithTimeout(url: string, headers: Record<string, string>): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(url, { headers, signal: controller.signal });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`Apify API ${response.status}: ${body.slice(0, 160)}`);
+    }
+    return response.json() as Promise<unknown>;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function numberFromUnknown(value: unknown): number {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value ? value : null;
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 function messageFromError(error: unknown): string {

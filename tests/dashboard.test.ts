@@ -18,6 +18,18 @@ test("dashboard API refuses protected routes without a session", async () => {
   }
 });
 
+test("dashboard healthz is public JSON and bypasses static fallback", async () => {
+  const fixture = await dashboardFixture();
+  try {
+    const response = await fetch(`${fixture.origin}/healthz`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /application\/json/);
+    assert.deepEqual(await response.json(), { ok: true });
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("dashboard login, session, logout, and write-only secrets work", async () => {
   const fixture = await dashboardFixture();
   try {
@@ -131,6 +143,26 @@ test("dashboard accepts a zero minimum score without breaking settings reads", a
   }
 });
 
+test("dashboard exposes user quota and admin Apify usage safely", async () => {
+  const fixture = await dashboardFixture();
+  try {
+    const cookie = await loginCookie(fixture.origin);
+    const usage = await jsonFetch<{ used: number; total: number; remaining: number }>(`${fixture.origin}/api/usage`, { cookie });
+    assert.equal(usage.used, 0);
+    assert.equal(usage.remaining, usage.total);
+
+    const apifyUsage = await jsonFetch<{ apifyUsage: { configured: boolean; totalUsageUsd: number; error: string | null } }>(
+      `${fixture.origin}/api/admin/apify-usage`,
+      { cookie }
+    );
+    assert.equal(apifyUsage.apifyUsage.configured, false);
+    assert.equal(apifyUsage.apifyUsage.totalUsageUsd, 0);
+    assert.ok(apifyUsage.apifyUsage.error);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("dashboard marks session cookies secure in production", async () => {
   const previousNodeEnv = process.env.NODE_ENV;
   const previousSecure = process.env.DASHBOARD_COOKIE_SECURE;
@@ -163,26 +195,32 @@ test("dashboard marks session cookies secure in production", async () => {
   }
 });
 
-test("dashboard refuses a search whose limit blows the per-scan budget", async () => {
+test("dashboard refuses creating searches past MAX_USER_SEARCHES", async () => {
   const fixture = await dashboardFixture();
+  const previousCap = process.env.MAX_USER_SEARCHES;
+  // Fixture seeds 1 enabled search → cap of 2 lets us add exactly 1 more.
+  process.env.MAX_USER_SEARCHES = "2";
   try {
     const cookie = await loginCookie(fixture.origin);
-    // Lower the cap so we can exercise the budget gate without a giant search.
-    await fetch(`${fixture.origin}/api/settings`, {
-      method: "PUT",
-      headers: { "content-type": "application/json", cookie },
-      body: JSON.stringify({ maxProductsPerScan: 50 })
-    });
-    // The fixture seeds 1 default search of 10 → adding 41 more would put us at 51, over the cap.
-    const response = await fetch(`${fixture.origin}/api/searches`, {
+    // 2nd search succeeds (total enabled = 2 = cap).
+    const ok = await fetch(`${fixture.origin}/api/searches`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
-      body: JSON.stringify({ query: "iphone 17 pro 256go", limit: 41, enabled: true })
+      body: JSON.stringify({ query: "iphone 17 pro 256go", limit: 10, enabled: true })
     });
-    assert.equal(response.status, 500); // dashboardServer wraps non-Http errors as 500
-    const text = await response.text();
-    assert.match(text, /Budget dépassé/);
+    assert.equal(ok.status, 201);
+    // 3rd should be rejected by the count cap.
+    const rejected = await fetch(`${fixture.origin}/api/searches`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ query: "samsung s26 ultra 256go", limit: 10, enabled: true })
+    });
+    assert.equal(rejected.status, 500); // dashboardServer wraps non-Http errors as 500
+    const text = await rejected.text();
+    assert.match(text, /Trop de recherches actives/);
   } finally {
+    if (previousCap === undefined) delete process.env.MAX_USER_SEARCHES;
+    else process.env.MAX_USER_SEARCHES = previousCap;
     await fixture.close();
   }
 });
@@ -432,6 +470,7 @@ function config(databasePath: string): RuntimeConfig {
     authorizedDataApiUrl: "",
     authorizedDataApiKey: "generic-secret",
     apifyActorId: "actor",
+    apifyDetailActorId: "actor-detail",
     discordWebhookUrl: "",
     pollIntervalSeconds: 900,
     providerTimeoutSeconds: 20,

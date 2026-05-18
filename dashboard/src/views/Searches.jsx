@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useApp } from "../AppContext.jsx";
 import { api } from "../api.js";
 import { updateById, numberValue } from "../format.js";
@@ -9,6 +9,11 @@ const EMPTY_SEARCH = { enabled: true, query: "", url: "", limit: 10 };
 export default function Searches() {
   const { searches, setSearches, runAction, loading } = useApp();
   const [draft, setDraft] = useState(EMPTY_SEARCH);
+  const [showSwitchPrompt, setShowSwitchPrompt] = useState(false);
+
+  const defaultsEnabled = useMemo(() => searches.some((s) => s.isDefault && s.enabled), [searches]);
+  const customCount = useMemo(() => searches.filter((s) => !s.isDefault && s.enabled).length, [searches]);
+  const enabledTotal = useMemo(() => searches.filter((s) => s.enabled).length, [searches]);
 
   async function saveSearch(search) {
     await runAction("Recherche sauvegardée", async () => {
@@ -23,6 +28,15 @@ export default function Searches() {
       const saved = await api("/api/searches", { method: "POST", body: draft });
       setSearches((items) => [...items, saved.search]);
       setDraft(EMPTY_SEARCH);
+      if (defaultsEnabled) setShowSwitchPrompt(true);
+    });
+  }
+
+  async function disableDefaults() {
+    await runAction("Mode manuel activé", async () => {
+      const result = await api("/api/searches/disable-defaults", { method: "POST" });
+      setSearches(result.searches);
+      setShowSwitchPrompt(false);
     });
   }
 
@@ -39,6 +53,64 @@ export default function Searches() {
           </nav>
         </div>
       </div>
+
+      {searches.length > 0 && enabledTotal === 0 && (
+        <div className="alert alert-danger d-flex align-items-start gap-2 mb-4" role="alert">
+          <iconify-icon icon="solar:danger-triangle-line-duotone" class="fs-5 mt-1"></iconify-icon>
+          <div>
+            <strong>Aucune recherche active — vous ne recevrez aucune alerte.</strong>
+            <div className="fs-3 text-muted mt-1">
+              Toutes vos recherches sont désactivées. Réactivez-en au moins une avec l'interrupteur "Active", ou ajoutez-en une nouvelle ci-dessous.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {defaultsEnabled && customCount === 0 && (
+        <div className="alert alert-info d-flex align-items-start gap-2 mb-4" role="status">
+          <iconify-icon icon="solar:magic-stick-3-line-duotone" class="fs-5 mt-1"></iconify-icon>
+          <div>
+            <strong>Mode automatique activé.</strong>{" "}
+            Bonoitec Flash surveille tous les téléphones premium (iPhone Pro, Galaxy Ultra, Pixel Pro, etc.) et vous alerte dès qu'une bonne affaire apparaît. Vous n'avez rien à configurer.
+            <div className="fs-3 text-muted mt-1">
+              Pour cibler des modèles précis, ajoutez vos propres recherches ci-dessous — le mode automatique peut alors être désactivé.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {defaultsEnabled && customCount > 0 && (
+        <div className="alert alert-warning d-flex align-items-start gap-2 mb-4" role="status">
+          <iconify-icon icon="solar:settings-line-duotone" class="fs-5 mt-1"></iconify-icon>
+          <div className="flex-grow-1">
+            <strong>Mode auto + manuel actif.</strong>{" "}
+            Le bot surveille à la fois nos recherches par défaut et vos {customCount} recherche{customCount > 1 ? "s" : ""} personnalisée{customCount > 1 ? "s" : ""}. Cela ralentit la couverture de vos modèles préférés.
+            <div className="mt-2">
+              <button className="btn btn-sm btn-warning" onClick={disableDefaults} disabled={loading}>
+                Désactiver le mode automatique
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSwitchPrompt && (
+        <div className="alert alert-primary d-flex align-items-start gap-2 mb-4">
+          <iconify-icon icon="solar:question-circle-line-duotone" class="fs-5 mt-1"></iconify-icon>
+          <div className="flex-grow-1">
+            <strong>Passer en mode manuel ?</strong>{" "}
+            Vous venez d'ajouter une recherche personnalisée. Souhaitez-vous désactiver la surveillance automatique des téléphones premium pour vous concentrer sur vos propres recherches ?
+            <div className="d-flex gap-2 mt-2">
+              <button className="btn btn-sm btn-primary" onClick={disableDefaults} disabled={loading}>
+                Oui, mode manuel
+              </button>
+              <button className="btn btn-sm btn-outline-secondary" onClick={() => setShowSwitchPrompt(false)} disabled={loading}>
+                Non, garder les deux
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="card mb-4">
         <div className="card-body">
@@ -129,11 +201,16 @@ export default function Searches() {
                         </div>
                       </td>
                       <td>
-                        <input
-                          className="form-control form-control-sm"
-                          value={search.query}
-                          onChange={(event) => setSearches(updateById(searches, search.id, { query: event.target.value }))}
-                        />
+                        <div className="d-flex align-items-center gap-2">
+                          <input
+                            className="form-control form-control-sm"
+                            value={search.query}
+                            onChange={(event) => setSearches(updateById(searches, search.id, { query: event.target.value }))}
+                          />
+                          {search.isDefault && (
+                            <span className="badge bg-info-subtle text-info fs-2 px-2" title="Recherche du mode automatique">Auto</span>
+                          )}
+                        </div>
                       </td>
                       <td>
                         <input

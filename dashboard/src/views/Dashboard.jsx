@@ -1,6 +1,6 @@
 import React from "react";
 import { useApp } from "../AppContext.jsx";
-import { eur, botStateLabel, timeShort } from "../format.js";
+import { eur, botStateLabel, dateTimeShort, timeShort } from "../format.js";
 import Sparkline from "../components/Sparkline.jsx";
 import Breadbar from "../components/Breadbar.jsx";
 import AreaChart from "../components/AreaChart.jsx";
@@ -49,7 +49,7 @@ const PROFILE_IMGS = [
 ];
 
 export default function Dashboard() {
-  const { currentUser, deals, scans, searches, status } = useApp();
+  const { currentUser, deals, scans, searches, status, usage, apifyUsage } = useApp();
 
   const avatarUrl   = discordAvatar(currentUser?.discordId, currentUser?.avatar);
   const displayName = currentUser?.username ?? "Chasseur";
@@ -66,7 +66,13 @@ export default function Dashboard() {
   const alertRate    = deals.length ? Math.round((alertsCount / deals.length) * 100) : 0;
   const botLabel     = botStateLabel(status);
   const nextScanFmt  = status?.nextScanAt ? timeShort(status.nextScanAt) : "--:--";
+  const lastScanFmt  = status?.lastScan?.startedAt ? dateTimeShort(status.lastScan.startedAt) : "-";
   const best         = status?.bestCandidate;
+  const quotaTotal   = usage?.total ?? currentUser?.dailyApifyQuota ?? 0;
+  const quotaUsed    = usage?.used ?? 0;
+  const quotaPct     = quotaTotal > 0 ? Math.min(100, Math.round((quotaUsed / quotaTotal) * 100)) : 0;
+  const apifyUsd     = apifyUsage?.totalUsageUsd ?? 0;
+  const latestApify  = apifyUsage?.actors?.map((actor) => actor.latestRunAt).filter(Boolean).sort().at(-1);
 
   const scoreHigh = deals.filter((d) => (d.score ?? 0) >= 80).length;
   const scoreMid  = deals.filter((d) => (d.score ?? 0) >= 60 && (d.score ?? 0) < 80).length;
@@ -143,6 +149,51 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="row">
+        <div className="col-lg-4 col-md-6">
+          <div className="card">
+            <div className="card-body">
+              <div className="d-flex align-items-center justify-content-between mb-2">
+                <p className="card-subtitle mb-0">Quota Apify aujourd&apos;hui</p>
+                <span className="badge bg-primary-subtle text-primary">{quotaPct}%</span>
+              </div>
+              <h4 className="card-title mb-2">{quotaUsed} / {quotaTotal || "-"}</h4>
+              <div className="progress" style={{ height: 6 }}>
+                <div className="progress-bar" style={{ width: `${quotaPct}%` }}></div>
+              </div>
+              <small className="text-muted d-block mt-2">Reset {usage?.resetAt ? timeShort(usage.resetAt) : "-"}</small>
+            </div>
+          </div>
+        </div>
+        <div className="col-lg-4 col-md-6">
+          <div className="card">
+            <div className="card-body">
+              <p className="card-subtitle">Scan bot</p>
+              <h4 className="card-title mb-1">{botLabel}</h4>
+              <div className="d-flex justify-content-between fs-3 text-muted">
+                <span>Dernier: {lastScanFmt}</span>
+                <span>Prochain: {nextScanFmt}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        {currentUser?.id === 1 ? (
+          <div className="col-lg-4 col-md-12">
+            <div className="card">
+              <div className="card-body">
+                <p className="card-subtitle">Crédit Apify du mois</p>
+                <h4 className="card-title mb-1">${apifyUsd.toFixed(4)}</h4>
+                <div className="d-flex justify-content-between fs-3 text-muted">
+                  <span>Paid actors: ${(apifyUsage?.paidActorUsd ?? 0).toFixed(4)}</span>
+                  <span>Dernier run: {latestApify ? dateTimeShort(latestApify) : "-"}</span>
+                </div>
+                {apifyUsage?.error ? <small className="text-danger d-block mt-2">{apifyUsage.error}</small> : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="row">

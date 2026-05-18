@@ -34,6 +34,18 @@ export default function ModelRules() {
         </div>
       </div>
 
+      {modelRules.length > 0 && enabledCount === 0 && (
+        <div className="alert alert-danger d-flex align-items-start gap-2 mb-4" role="alert">
+          <iconify-icon icon="solar:danger-triangle-line-duotone" class="fs-5 mt-1"></iconify-icon>
+          <div>
+            <strong>Aucun modèle activé — vous ne recevrez aucune alerte.</strong>
+            <div className="fs-3 text-muted mt-1">
+              Le bot scanne les annonces mais rejette tout candidat dont le modèle n'est pas activé ici. Réactivez au moins un modèle pour recevoir des alertes Discord.
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <div className="card-body">
           <div className="d-flex align-items-center justify-content-between mb-3">

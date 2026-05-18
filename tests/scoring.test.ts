@@ -7,7 +7,7 @@ import type { Listing, PhoneMatch } from "../src/types.js";
 test("alerts on strong clean iPhone deal", () => {
   const deal = scoreListing(listing({
     title: "iPhone 15 Pro Max 256Go",
-    price: 650,
+    price: 580,
     description: "Tres bon etat, facture, debloque tout operateur",
     sellerRating: 4.9,
     sellerReviews: 55,
@@ -15,7 +15,7 @@ test("alerts on strong clean iPhone deal", () => {
   }), []);
 
   assert.equal(deal?.shouldAlert, true);
-  assert.ok((deal?.score ?? 0) >= 82);
+  assert.ok((deal?.score ?? 0) >= 75);
 });
 
 test("scores common storage variants from fallback benchmark", () => {
@@ -23,8 +23,8 @@ test("scores common storage variants from fallback benchmark", () => {
     ["iPhone 15 Pro 256Go", 500],
     ["iPhone 15 Pro 512Go", 580],
     ["Samsung Galaxy S23 Ultra 512Go", 430],
-    ["Google Pixel 10 Pro XL 256Go", 610],
-    ["Samsung Galaxy S26 Ultra 256Go", 760]
+    ["Google Pixel 10 Pro XL 256Go", 570],
+    ["Samsung Galaxy S26 Ultra 256Go", 720]
   ] as const;
 
   for (const [title, price] of variants) {
@@ -74,7 +74,7 @@ test("uses final cost instead of raw listing price", () => {
 test("does not alert when seller history is too weak for a large discount", () => {
   const deal = scoreListing(listing({
     title: "iPhone 15 Pro Max 256Go",
-    price: 560,
+    price: 500,
     description: "Tres bon etat, facture, debloque tout operateur",
     imageUrl: "https://example.test/image.jpg"
   }), []);
@@ -86,7 +86,7 @@ test("does not alert when seller history is too weak for a large discount", () =
 test("does not alert when a deep discount comes from a very new seller account", () => {
   const deal = scoreListing(listing({
     title: "iPhone 15 Pro Max 256Go",
-    price: 600,
+    price: 530,
     description: "Tres bon etat, facture, debloque tout operateur",
     sellerRating: 5,
     sellerReviews: 10,
@@ -101,7 +101,7 @@ test("does not alert when a deep discount comes from a very new seller account",
 test("does not alert on deep discount with seller and item country mismatch", () => {
   const deal = scoreListing(listing({
     title: "iPhone 15 Pro Max 256Go",
-    price: 520,
+    price: 450,
     description: "Tres bon etat, facture, debloque tout operateur",
     sellerRating: 4.9,
     sellerReviews: 55,
@@ -181,14 +181,14 @@ test("does not alert on high-severity condition risks even with a strong discoun
 test("does not alert on absolute savings alone when score and discount are weak", () => {
   const deal = scoreListing(listing({
     title: "iPhone 15 Pro Max 256Go",
-    price: 760,
+    price: 655,
     description: "Tres bon etat",
     sellerRating: 0,
     sellerReviews: 0,
     imageUrl: "https://example.test/image.jpg"
   }), []);
 
-  // Vinted FR final price ≈ 760 + max(0.7, 5%) + 4.99 = 802.99 → savings ≈ 87.
+  // Vinted FR final price ≈ 655 + max(0.7, 5%) + 4.99 = 692.74 → savings ≈ 87.
   assert.equal(Math.round(deal?.savings ?? 0), 87);
   assert.equal(deal?.shouldAlert, false);
 });

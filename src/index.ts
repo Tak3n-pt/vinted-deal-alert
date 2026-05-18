@@ -68,7 +68,7 @@ export async function runScan({
   userId,
   now = () => new Date()
 }: {
-  provider: Pick<ListingProvider, "search">;
+  provider: Pick<ListingProvider, "search" | "fetchListingDetails">;
   store: Pick<DealStoreApi, "recentHistory" | "saveObserved" | "reserveAlert" | "recordAlert" | "releaseAlert" | "alertsInLast24h">;
   discord: Pick<DiscordWebhook, "sendDeal">;
   searches: Parameters<ListingProvider["search"]>[0][];
@@ -84,7 +84,7 @@ export async function runScan({
   userId?: number;
   /** Injectable clock for testing quiet-hours logic. */
   now?: () => Date;
-}): Promise<{ listings: number; scored: number; alertable: number; sent: number; bestCandidate: string }> {
+}): Promise<{ listings: number; scored: number; alertable: number; sent: number; bestCandidate: string; borderlineVerified: number }> {
   const allListings: Listing[] = [];
 
   for (const search of searches) {
@@ -96,9 +96,83 @@ export async function runScan({
   const history = await store.recentHistory();
   const scored = scoreListings(uniqueListings, history, scoringOptions);
 
+  // Detail-page verification: for alerts that scored in the borderline band,
+  // fetch the full listing page (description, photos, full seller history)
+  // and re-score with the enriched data. Demote any that no longer pass.
+  // Also: replace the listing on each verified deal so the enriched data
+  // flows into observed_listings (better benchmark history) and into the
+  // Discord embed.
+  const verifyMin = Number(process.env.DETAIL_VERIFY_SCORE_MIN ?? 60);
+  const verifyMax = Number(process.env.DETAIL_VERIFY_SCORE_MAX ?? 88);
+  const verifyMaxPerScan = Math.max(1, Math.floor(Number(process.env.DETAIL_VERIFY_MAX_PER_SCAN ?? 5)));
+  const borderline = scored.filter(
+    (deal) => deal.shouldAlert && deal.score >= verifyMin && deal.score <= verifyMax
+  ).sort((a, b) => a.score - b.score).slice(0, verifyMaxPerScan);
+  let borderlineVerified = 0;
+  if (borderline.length > 0 && typeof provider.fetchListingDetails === "function") {
+    try {
+      const details = await provider.fetchListingDetails(borderline.map((b) => b.listing.url));
+      borderlineVerified = details.length;
+      // Build lookup by both id and url. The detail actor sometimes returns a
+      // canonical id that differs from the search actor's id (different URL
+      // suffix or normalization), so url-matching is the reliable fallback.
+      const detailsById = new Map(details.map((d) => [d.id, d]));
+      const detailsByUrl = new Map(details.map((d) => [d.url, d]));
+      const enriched: Listing[] = [];
+      const matchedDetailByDealId = new Map<string, Listing>();
+      for (const b of borderline) {
+        const d = detailsById.get(b.listing.id) ?? detailsByUrl.get(b.listing.url);
+        if (d) {
+          enriched.push(d);
+          matchedDetailByDealId.set(b.listing.id, d);
+        }
+      }
+      const reScored = scoreListings(enriched, history, scoringOptions);
+      const reScoredByUrl = new Map(reScored.map((r) => [r.listing.url, r]));
+      let demoted = 0;
+      let unverified = 0;
+      for (const deal of borderline) {
+        const matchedDetail = matchedDetailByDealId.get(deal.listing.id);
+        if (!matchedDetail) {
+          // Couldn't find a detail row — fail-safe: skip the alert rather than
+          // ship an unverified borderline deal.
+          deal.shouldAlert = false;
+          deal.rejectionReasons.push("detail-verification-missing");
+          unverified += 1;
+          continue;
+        }
+        const verified = reScoredByUrl.get(deal.listing.url);
+        if (!verified || !verified.shouldAlert) {
+          deal.shouldAlert = false;
+          deal.rejectionReasons.push("detail-verification-failed");
+          demoted += 1;
+          continue;
+        }
+        // Promote the enriched listing onto the deal so saveObserved + Discord
+        // embed use the richer data (better description, photos, seller info).
+        deal.listing = matchedDetail;
+      }
+      console.log(`[verify] borderline=${borderline.length} demoted=${demoted} unverified=${unverified}`);
+      if (unverified > 0) {
+        await dashboardStore?.log(
+          "warn",
+          `Vérification détail : ${unverified} annonce(s) sans correspondance — alertes reportées par sécurité.`,
+          userId
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await dashboardStore?.log("warn", `Vérification détail échouée : ${msg}`, userId);
+    }
+  }
+
+  // All alert-state operations are scoped to the user owning this scan.
+  // Default to seed admin (id=1) preserves single-tenant CLI behavior.
+  const scanUserId = userId ?? 1;
+
   for (const deal of scored) {
     if (!deal.risks.some((risk) => risk.severity === "reject" || risk.severity === "high")) {
-      await store.saveObserved(deal.listing, deal.match);
+      await store.saveObserved(deal.listing, deal.match, scanUserId);
     }
   }
 
@@ -106,9 +180,6 @@ export async function runScan({
   const maxPerScan = delivery?.maxAlertsPerScan ?? 0;
   const maxPerDay = delivery?.maxAlertsPerDay ?? 0;
   const inQuietHours = isInQuietHours(delivery, now());
-  // All alert-state operations are scoped to the user owning this scan.
-  // Default to seed admin (id=1) preserves single-tenant CLI behavior.
-  const scanUserId = userId ?? 1;
   const startingDailyAlerts = maxPerDay > 0 ? await store.alertsInLast24h(scanUserId) : 0;
   let sentAlerts = 0;
   const sentListingIds = new Set<string>();
@@ -144,7 +215,7 @@ export async function runScan({
   const bestCandidate = scored[0] ? candidateSummary(scored[0]) : "aucun";
   await dashboardStore?.recordDealCandidates(scanRunId, scored, sentListingIds, userId);
   console.log(`[scan] annonces=${uniqueListings.length} scorées=${scored.length} alertables=${alertable} envoyées=${sentAlerts} meilleur=${bestCandidate}`);
-  return { listings: uniqueListings.length, scored: scored.length, alertable, sent: sentAlerts, bestCandidate };
+  return { listings: uniqueListings.length, scored: scored.length, alertable, sent: sentAlerts, bestCandidate, borderlineVerified };
 }
 
 /**
@@ -158,7 +229,17 @@ export function isInQuietHours(delivery: AlertDeliveryOptions | undefined, clock
   const startMin = parseHHMM(delivery.quietHoursStart);
   const endMin = parseHHMM(delivery.quietHoursEnd);
   if (startMin === null || endMin === null) return false;
-  const nowMin = clock.getHours() * 60 + clock.getMinutes();
+  // Read hour/minute in Europe/Paris so quiet hours match user expectation
+  // regardless of the server timezone (Azure containers run in UTC).
+  const parts = new Intl.DateTimeFormat("fr-FR", {
+    timeZone: "Europe/Paris",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(clock);
+  const parisHour = Number(parts.find((p) => p.type === "hour")?.value ?? clock.getHours());
+  const parisMinute = Number(parts.find((p) => p.type === "minute")?.value ?? clock.getMinutes());
+  const nowMin = parisHour * 60 + parisMinute;
   if (startMin === endMin) return true;
   if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
   // Wraps past midnight.
@@ -166,9 +247,14 @@ export function isInQuietHours(delivery: AlertDeliveryOptions | undefined, clock
 }
 
 function parseHHMM(value: string): number | null {
-  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  // Accept "H:MM" (single-digit hour) as well as "HH:MM". Users typing "9:00"
+  // shouldn't silently fail quiet-hours configuration.
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
   if (!match || !match[1] || !match[2]) return null;
-  return Number(match[1]) * 60 + Number(match[2]);
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return hour * 60 + minute;
 }
 
 function dedupeById(listings: Listing[]): Listing[] {

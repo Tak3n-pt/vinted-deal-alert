@@ -5,3 +5,4 @@ data
 *.log
 .git
 deploy/*.tar.gz
+supabase/.temp

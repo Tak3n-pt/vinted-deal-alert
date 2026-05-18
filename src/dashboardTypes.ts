@@ -69,6 +69,14 @@ export interface DashboardSearch {
   market: "FR";
   limit: number;
   sort: "newest";
+  /**
+   * True when the search was seeded by the bot as part of the broad starter
+   * pack (covers all premium phones automatically). Set to false for any
+   * search the user creates themselves via the dashboard. The UI uses this
+   * to offer a "switch from automatic to manual mode" prompt when a user
+   * adds their first custom search.
+   */
+  isDefault: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -160,6 +168,10 @@ export interface User {
   betaApproved: boolean;
   createdAt: string;
   lastLoginAt: string | null;
+  /** Stripe customer id, populated by webhook events. Null until the user pays. */
+  stripeCustomerId: string | null;
+  /** Subscription period-end UTC ISO. Used by the dashboard to render "expires in N days". */
+  currentPeriodEnd: string | null;
 }
 
 export interface DiscordProfile {
@@ -173,11 +185,44 @@ export interface DiscordProfile {
 export interface UserSettings {
   userId: number;
   discordWebhookConfigured: boolean;
+  /**
+   * True when the encrypted webhook in the DB can no longer be decrypted —
+   * usually because DASHBOARD_ENCRYPTION_KEY was rotated. The user must
+   * re-enter their webhook for the bot to send alerts again. Surfaced on
+   * the dashboard so the failure is visible instead of silent.
+   */
+  discordWebhookDecryptError: boolean;
   dryRun: boolean;
   pollIntervalSeconds: number;
   minDiscountPct: number | null;
   maxProductPrice: number | null;
   updatedAt: string;
+}
+
+export interface UsageView {
+  used: number;
+  total: number;
+  remaining: number;
+  plan: User["plan"];
+  resetAt: string;
+}
+
+export interface ApifyActorUsageView {
+  actorId: string;
+  recentRunCount: number;
+  recentUsageUsd: number;
+  latestRunAt: string | null;
+}
+
+export interface ApifyUsageView {
+  configured: boolean;
+  totalUsageUsd: number;
+  paidActorUsd: number;
+  datasetReads: number;
+  cycleStart: string | null;
+  cycleEnd: string | null;
+  actors: ApifyActorUsageView[];
+  error: string | null;
 }
 
 export type { ModelRule, RiskRules, ScoringOptions };

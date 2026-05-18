@@ -43,7 +43,25 @@ export default function App() {
   const View = VIEWS[activeView] ?? Dashboard;
   return (
     <HorizontalLayout>
+      <GlobalAlerts />
       <View />
     </HorizontalLayout>
+  );
+}
+
+function GlobalAlerts() {
+  const { userSettings } = useApp();
+  if (!userSettings?.discordWebhookDecryptError) return null;
+  return (
+    <div className="alert alert-danger d-flex align-items-start gap-2 mb-4" role="alert">
+      <iconify-icon icon="solar:lock-keyhole-unlocked-line-duotone" class="fs-5 mt-1"></iconify-icon>
+      <div>
+        <strong>Votre webhook Discord ne peut plus être déchiffré.</strong>
+        <div className="fs-3 text-muted mt-1">
+          La clé de chiffrement serveur a probablement été régénérée. Vos alertes ne partent plus.
+          Reconfigurez votre webhook (Paramètres → Secrets → Webhook Discord) pour relancer les alertes.
+        </div>
+      </div>
+    </div>
   );
 }
